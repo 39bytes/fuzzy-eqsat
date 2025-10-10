@@ -22,7 +22,7 @@ pub struct RawLayer {
 #[derive(Deserialize, Debug)]
 pub struct ModelLayer {
     pub weights: Array2<f64>,
-    pub biases: Array1<f64>,
+    pub biases: Array2<f64>,
     pub input_shape: (usize,),
     pub output_shape: (usize,),
     pub layer_type: String,
@@ -32,6 +32,11 @@ pub struct ModelLayer {
 #[derive(Deserialize, Debug)]
 pub struct Model {
     pub layers: Vec<ModelLayer>,
+}
+
+#[derive(Deserialize, Debug)]
+pub struct InVec {
+    pub vec: Vec<f64>,
 }
 
 // relu(W0 * i + b0)
@@ -52,7 +57,7 @@ pub fn load_model(filename: &str) -> Result<Model> {
                     l.weights.into_iter().flatten().collect::<Vec<_>>(),
                 )
                 .unwrap(),
-                biases: Array1::from_shape_vec((l.output_shape.0), l.biases).unwrap(),
+                biases: Array2::from_shape_vec((l.output_shape.0, 1), l.biases).unwrap(),
                 input_shape: l.input_shape,
                 output_shape: l.output_shape,
                 layer_type: l.layer_type,
@@ -60,4 +65,11 @@ pub fn load_model(filename: &str) -> Result<Model> {
             })
             .collect(),
     })
+}
+
+pub fn load_in_vec(filename: &str) -> Result<Array2<f64>> {
+    let contents = fs::read_to_string(filename)?;
+    let vec: InVec = serde_json::from_str(&contents)?;
+
+    Ok(Array2::from_shape_vec((784, 1), vec.vec)?)
 }

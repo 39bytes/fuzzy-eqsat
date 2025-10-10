@@ -1,12 +1,13 @@
 use std::cmp::Ordering;
 
 use egg::*;
+use ndarray::ArcArray2;
 
 use crate::{analysis::LinalgAnalysis, lang::Linalg};
 
 pub struct LinalgCost<'a> {
     pub egraph: &'a EGraph<Linalg, LinalgAnalysis>,
-    pub max_error: f64,
+    pub max_rel_error: f64,
 }
 
 struct PossibleCosts {
@@ -18,6 +19,7 @@ struct CostWithErrorBound {
     cost: usize,
     max_error: f64,
     error: f64,
+    result: ArcArray2<f64>,
 }
 
 impl PartialOrd for CostWithErrorBound {
@@ -37,9 +39,14 @@ impl<'a> CostFunction<Linalg> for LinalgCost<'a> {
     where
         C: FnMut(Id) -> Self::Cost,
     {
-        let dim = |i: &Id| self.egraph[*i].data.get_inner_dim();
+        let data = |i: &Id| self.egraph[*i].data;
         let op_cost = match enode {
-            Linalg::Mat(_) => 0,
+            Linalg::Mat(a) => CostWithErrorBound {
+                cost: 0,
+                max_error: self.max_rel_error,
+                error: 0,
+                result: data(a).get_inner_value(),
+            },
             Linalg::Num(_) => 0,
             Linalg::SvdU([a, _]) | Linalg::SvdD([a, _]) | Linalg::SvdVt([a, _]) => 0,
             Linalg::Add([a, _]) | Linalg::Relu(a) => dim(a).size(),

@@ -1,4 +1,5 @@
 use anyhow::Result;
+use ndarray::Array2;
 use std::collections::HashMap;
 use std::rc::Rc;
 
@@ -9,15 +10,18 @@ use ndarray_linalg::*;
 use crate::analysis::{AnalysisData, MatrixDim, VarInfo};
 use crate::cost::LinalgCost;
 use crate::lang::Linalg;
-use crate::model::{Model, load_model};
+use crate::load::{Model, load_in_vec, load_model};
 
 mod analysis;
 mod cost;
 mod lang;
-mod model;
+mod load;
 mod util;
 
-fn make_expr(model: Model) -> (Result<(HashMap<Symbol, VarInfo>, RecExpr<Linalg>)>) {
+fn make_expr(
+    model: Model,
+    avg_vec: Array2<f64>,
+) -> (Result<(HashMap<Symbol, VarInfo>, RecExpr<Linalg>)>) {
     let input_size = model.layers[0].input_shape.0;
 
     let mut expr: RecExpr<Linalg> = RecExpr::default();
@@ -28,6 +32,7 @@ fn make_expr(model: Model) -> (Result<(HashMap<Symbol, VarInfo>, RecExpr<Linalg>
         VarInfo {
             dim: MatrixDim::new(input_size, 1),
             singular_values: None,
+            value: Some(avg_vec.into()),
         },
     )]);
 
@@ -46,7 +51,8 @@ fn make_expr(model: Model) -> (Result<(HashMap<Symbol, VarInfo>, RecExpr<Linalg>
             weight_mat,
             VarInfo {
                 dim: MatrixDim::new(rows, cols),
-                singular_values: Some(Rc::new(sigma)),
+                singular_values: Some(sigma.into()),
+                value: Some(layer.weights.into()),
             },
         );
 
@@ -55,6 +61,7 @@ fn make_expr(model: Model) -> (Result<(HashMap<Symbol, VarInfo>, RecExpr<Linalg>
             VarInfo {
                 dim: MatrixDim::new(rows, 1),
                 singular_values: None,
+                value: Some(layer.biases.into()),
             },
         );
 
@@ -121,7 +128,8 @@ fn main() -> Result<()> {
     }));
 
     let model = load_model("mnist_model_params.json").unwrap();
-    let (var_info, expr) = make_expr(model)?;
+    let in_vec = load_in_vec("vec.json").unwrap();
+    let (var_info, expr) = make_expr(model, in_vec)?;
 
     println!("{}", expr.pretty(30));
 
@@ -136,13 +144,14 @@ fn main() -> Result<()> {
         &runner.egraph,
         LinalgCost {
             egraph: &runner.egraph,
+            max_rel_error: 0.1,
         },
     );
 
     let (cost, best_expr) = extractor.find_best(runner.roots[0]);
     println!("Before: {}", expr);
     println!("Found best: {}", best_expr);
-    println!("Cost: {}", cost);
+    println!("Cost: {:?}", cost);
 
     Ok(())
 }

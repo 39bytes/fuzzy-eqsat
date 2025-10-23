@@ -53,7 +53,7 @@ pub fn load_model(filename: &str) -> Result<Model> {
             .into_iter()
             .map(|l| ModelLayer {
                 weights: Array2::from_shape_vec(
-                    (l.input_shape.0, l.output_shape.0),
+                    (l.output_shape.0, l.input_shape.0),
                     l.weights.into_iter().flatten().collect::<Vec<_>>(),
                 )
                 .unwrap(),

@@ -20,6 +20,7 @@ pub struct LinalgCost<'a> {
 pub struct CostWithErrorBound {
     cost: usize,
     error: f64,
+    max_rel_error: f64,
     val: ArcArray2<f64>,
 }
 
@@ -31,7 +32,17 @@ impl Display for CostWithErrorBound {
 
 impl PartialOrd for CostWithErrorBound {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        self.cost.partial_cmp(&other.cost)
+        let a = if self.error >= self.max_rel_error {
+            usize::MAX
+        } else {
+            self.cost
+        };
+        let b = if other.error >= other.max_rel_error {
+            usize::MAX
+        } else {
+            other.cost
+        };
+        a.partial_cmp(&b)
     }
 }
 
@@ -93,11 +104,8 @@ impl<'a> LinalgCost<'a> {
         let error = self.relative_frobenius_norm_error(enode, &res);
 
         CostWithErrorBound {
-            cost: if error > self.max_rel_error {
-                usize::MAX
-            } else {
-                total_cost
-            },
+            cost: total_cost,
+            max_rel_error: self.max_rel_error,
             error,
             val: res,
         }
@@ -116,6 +124,7 @@ impl<'a> CostFunction<Linalg> for LinalgCost<'a> {
             Linalg::Mat(a) => CostWithErrorBound {
                 cost: 0,
                 error: 0.0,
+                max_rel_error: self.max_rel_error,
                 val: self.var_info[a].value.clone(),
             },
             Linalg::Num(_) => CostWithErrorBound::default(),

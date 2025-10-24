@@ -166,24 +166,23 @@ fn main() -> Result<()> {
         LinalgCost {
             egraph: &runner.egraph,
             var_info,
-            max_rel_error: 0.20,
+            max_rel_error: 0.05,
         },
-        20,
     );
 
     // println!("{:?}", extractor.costs);
-
-    for eclass in runner.egraph.classes() {
-        let best_k = extractor.find_best_k(eclass.id);
-
-        for (cost, node) in best_k {
-            if node.to_string().parse::<f64>().is_ok() {
-                continue;
-            }
-            println!("eclass: {} term: {}", eclass.id, node);
-            println!("{}", cost);
-        }
-    }
+    //
+    // for eclass in runner.egraph.classes() {
+    //     let best_k = extractor.find_best_k(eclass.id);
+    //
+    //     for (cost, node) in best_k {
+    //         if node.to_string().parse::<f64>().is_ok() {
+    //             continue;
+    //         }
+    //         println!("eclass: {} term: {}", eclass.id, node);
+    //         println!("{}", cost);
+    //     }
+    // }
 
     let (cost, best_expr) = extractor.find_best(runner.roots[0]);
     println!("Before: {}", expr);

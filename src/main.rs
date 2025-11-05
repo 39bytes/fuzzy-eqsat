@@ -7,11 +7,11 @@ use analysis::LinalgAnalysis;
 use egg::*;
 use ndarray_linalg::*;
 
-use crate::analysis::{AnalysisData, MatrixDim, TrueValue, VarInfo};
+use crate::analysis::{AnalysisData, MatrixData, MatrixDim, TrueValue, VarInfo};
 use crate::cost::LinalgCost;
 use crate::extract::MyExtractor;
 use crate::lang::Linalg;
-use crate::model::{Model, export_params, load_model, load_test_set};
+use crate::model::{Model, load_model, load_test_set};
 
 mod analysis;
 mod cost;
@@ -103,25 +103,30 @@ impl Applier<Linalg, LinalgAnalysis> for SvdApplier {
         let a = subst[self.a];
         let b = subst[self.b];
         let rank = match &egraph[a].data {
-            AnalysisData::Mat {
+            AnalysisData::Mat(MatrixData {
                 true_value: Some(TrueValue { svd, .. }),
                 ..
-            } => svd.1.iter().filter(|x| **x > 0.0).count(),
+            }) => svd.1.iter().filter(|x| **x > 0.0).count(),
 
             _ => return vec![],
         };
 
-        let step = (rank.ilog2() - 2) as usize;
+        let step = (rank.ilog2() - 2) as i32;
         let mut changed = vec![];
-        let mut k = rank - step;
+        let mut k: i32 = rank as i32 - step;
 
         while k > 0 {
-            let k_node = egraph.add(Linalg::Num(k as i32));
-            println!("K ({}) node ID: {}", k, k_node);
-            let svd_mul_k = egraph.add(Linalg::SVDMul([a, b, k_node]));
+            let k_node = egraph.add(Linalg::Num(k));
+            let u_node = egraph.add(Linalg::SvdU([a, k_node]));
+            let d_node = egraph.add(Linalg::SvdD([a, k_node]));
+            let vt_node = egraph.add(Linalg::SvdVt([a, k_node]));
 
-            if egraph.union(eclass, svd_mul_k) {
-                changed.push(svd_mul_k);
+            let vtb = egraph.add(Linalg::Mul([vt_node, b]));
+            let dvtb = egraph.add(Linalg::Mul([d_node, vtb]));
+            let udvtb = egraph.add(Linalg::Mul([u_node, dvtb]));
+
+            if egraph.union(eclass, udvtb) {
+                changed.push(udvtb);
             }
 
             k -= step;
@@ -133,7 +138,7 @@ impl Applier<Linalg, LinalgAnalysis> for SvdApplier {
 
 fn main() -> Result<()> {
     let mut rules: Vec<Rewrite<Linalg, LinalgAnalysis>> = vec![];
-    rules.extend(rewrite!("matmul-assoc"; "(* (* ?a ?b) ?c)" <=> "(* ?a (* ?b ?c))"));
+    // rules.extend(rewrite!("matmul-assoc"; "(* (* ?a ?b) ?c)" <=> "(* ?a (* ?b ?c))"));
     rules.push(rewrite!("svd-mul"; "(* ?a ?b)" => {
         SvdApplier {
             a: "?a".parse().unwrap(),
@@ -168,16 +173,26 @@ fn main() -> Result<()> {
         LinalgCost {
             egraph: &runner.egraph,
             var_info: var_info.clone(),
-            max_rel_error: 0.01,
+            max_rel_error: 0.05,
         },
     );
 
+    for expr in extractor.all_costs(runner.roots[0]) {
+        let cost = &expr.cost;
+        let expr = expr.node.build_recexpr(|id| expr.children[&id].clone());
+        println!(
+            "cost: {}, error: {:?}, expr: {}",
+            cost.cost, cost.error, expr
+        );
+    }
+
     let (cost, best_expr) = extractor.find_best(runner.roots[0]);
+
     println!("Before: {}", expr);
     println!("Found best: {}", best_expr);
     println!("Cost: {:?}", cost);
 
-    export_params(&best_expr, &var_info, "optimized.json")?;
+    // export_params(&best_expr, &var_info, "optimized.json")?;
 
     Ok(())
 }

@@ -5,9 +5,9 @@ use ndarray::{ArcArray2, Array2, s};
 use ndarray_linalg::Norm;
 
 use crate::{
-    analysis::{AnalysisData, LinalgAnalysis, VarInfo},
+    analysis::{LinalgAnalysis, VarInfo},
     lang::Linalg,
-    math::{make_truncated_svd, relu, softmax},
+    math::{relu, softmax},
 };
 
 #[derive(Debug)]
@@ -19,60 +19,54 @@ pub struct LinalgCost<'a> {
 
 #[derive(PartialEq, Debug, Clone, Default)]
 pub struct CostWithErrorBound {
-    cost: usize,
-    error: f64,
-    max_rel_error: f64,
-    val: ArcArray2<f64>,
+    pub cost: usize,
+    pub error: Option<f64>,
+    pub max_rel_error: f64,
+    pub val: ArcArray2<f64>,
 }
 
 impl Display for CostWithErrorBound {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Cost: {}, error: {}", self.cost, self.error)
+        write!(f, "Cost: {}, error: {:?}", self.cost, self.error)
     }
 }
 
 impl PartialOrd for CostWithErrorBound {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        let a = if self.error >= self.max_rel_error {
+        let a = if self.error.unwrap_or(0.0) > self.max_rel_error {
             usize::MAX
         } else {
             self.cost
         };
-        let b = if other.error >= other.max_rel_error {
+        let b = if other.error.unwrap_or(0.0) > other.max_rel_error {
             usize::MAX
         } else {
             other.cost
         };
+
         a.partial_cmp(&b)
     }
 }
 
 impl<'a> LinalgCost<'a> {
-    fn get_expected_spectral_norm(&self, enode: &Linalg) -> f64 {
-        let id = self
+    fn relative_frobenius_norm_error(
+        &self,
+        enode: &Linalg,
+        approx: &ArcArray2<f64>,
+    ) -> Option<f64> {
+        let eclass_id = self
             .egraph
             .lookup(enode.clone())
             .expect("enode should be in egraph");
-        self.egraph[id]
-            .data
-            .get_inner_value()
-            .expect("true value should exist in eclass")
-            .svd
-            .1[0]
-    }
 
-    fn relative_frobenius_norm_error(&self, enode: &Linalg, approx: &ArcArray2<f64>) -> f64 {
-        let id = self
-            .egraph
-            .lookup(enode.clone())
-            .expect("enode should be in egraph");
-        let true_val = self.egraph[id]
-            .data
-            .get_inner_value()
-            .expect("true value should exist in eclass")
-            .val;
+        let eclass = &self.egraph[eclass_id];
 
-        (&true_val - approx).norm_l2() / true_val.norm_l2()
+        eclass
+            .data
+            .unwrap_mat()
+            .true_value
+            .as_ref()
+            .map(|x| (&x.val - approx).norm_l2() / x.val.norm_l2())
     }
 
     fn fold_costs(
@@ -108,38 +102,95 @@ impl<'a> CostFunction<Linalg> for LinalgCost<'a> {
         match enode {
             Linalg::Mat(a) => CostWithErrorBound {
                 cost: 0,
-                error: 0.0,
+                error: Some(0.0),
                 max_rel_error: self.max_rel_error,
                 val: self.var_info[a].value.clone(),
             },
             Linalg::Num(_) => CostWithErrorBound::default(),
-            Linalg::SVDMul([a, b, k]) => {
+            // Linalg::SVDMul([a, b, k]) => {
+            //     let a_cost = costs(*a);
+            //     let b_cost = costs(*b);
+            //     let a_dim = data(a).unwrap_dim();
+            //     let b_dim = data(b).unwrap_dim();
+            //     let k = match data(k) {
+            //         AnalysisData::Num(x) => x,
+            //         _ => panic!("oops"),
+            //     } as usize;
+            //
+            //     // n x m * m x l
+            //     // => n x k * k x k * k x m * m x l
+            //     let op_cost = k * b_dim.rows() * b_dim.cols()
+            //         + k * b_dim.cols()
+            //         + a_dim.rows() * k * b_dim.cols();
+            //
+            //     let svd = data(a).unwrap_true_val().unwrap().svd;
+            //     let (u_k, sigma_k, vt_k) = make_truncated_svd(&svd, k);
+            //
+            //     let vtb = vt_k.dot(&b_cost.val);
+            //     let scaled = sigma_k.dot(&vtb);
+            //     let res = u_k.dot(&scaled).to_shared();
+            //
+            //     self.fold_costs(enode, res, op_cost, &[a_cost, b_cost])
+            // }
+            Linalg::SvdU([a, k]) => {
                 let a_cost = costs(*a);
-                let b_cost = costs(*b);
-                let a_dim = data(a).get_inner_dim();
-                let b_dim = data(b).get_inner_dim();
-                let k = match data(k) {
-                    AnalysisData::Num(x) => x,
-                    _ => panic!("oops"),
-                } as usize;
+                let k = data(k).unwrap_num();
 
-                // n x m * m x l
-                // => n x k * k x k * k x m * m x l
-                let op_cost = k * b_dim.rows() * b_dim.cols()
-                    + k * b_dim.cols()
-                    + a_dim.rows() * k * b_dim.cols();
+                let (u, _, _) = data(a)
+                    .unwrap_mat()
+                    .true_value
+                    .as_ref()
+                    .expect("a should have a true value")
+                    .svd
+                    .clone();
 
-                let svd = data(a).get_inner_value().unwrap().svd;
-                let (u_k, sigma_k, vt_k) = make_truncated_svd(&svd, k);
+                CostWithErrorBound {
+                    cost: a_cost.cost,
+                    error: None,
+                    max_rel_error: self.max_rel_error,
+                    val: u.slice_move(s![.., ..k]),
+                }
+            }
+            Linalg::SvdD([a, k]) => {
+                let a_cost = costs(*a);
+                let k = data(k).unwrap_num();
 
-                let vtb = vt_k.dot(&b_cost.val);
-                let scaled = sigma_k.dot(&vtb);
-                let res = u_k.dot(&scaled).to_shared();
+                let (_, sigma, _) = data(a)
+                    .unwrap_mat()
+                    .true_value
+                    .as_ref()
+                    .expect("a should have a true value")
+                    .svd
+                    .clone();
 
-                self.fold_costs(enode, res, op_cost, &[a_cost, b_cost])
+                CostWithErrorBound {
+                    cost: a_cost.cost,
+                    error: None,
+                    max_rel_error: self.max_rel_error,
+                    val: Array2::from_diag(&sigma.slice(s![..k])).into(),
+                }
+            }
+            Linalg::SvdVt([a, k]) => {
+                let a_cost = costs(*a);
+                let k = data(k).unwrap_num();
+
+                let (_, _, vt) = data(a)
+                    .unwrap_mat()
+                    .true_value
+                    .as_ref()
+                    .expect("a should have a true value")
+                    .svd
+                    .clone();
+
+                CostWithErrorBound {
+                    cost: a_cost.cost,
+                    error: None,
+                    max_rel_error: self.max_rel_error,
+                    val: vt.slice_move(s![..k, ..]),
+                }
             }
             Linalg::Add([a, b]) => {
-                let a_dim = data(a).get_inner_dim();
+                let a_dim = data(a).unwrap_mat().dim;
                 let a_cost = costs(*a);
                 let b_cost = costs(*b);
 
@@ -150,7 +201,7 @@ impl<'a> CostFunction<Linalg> for LinalgCost<'a> {
                 self.fold_costs(enode, res.into(), op_cost, &[a_cost, b_cost])
             }
             Linalg::Relu(a) => {
-                let a_dim = data(a).get_inner_dim();
+                let a_dim = data(a).unwrap_mat().dim;
                 let a_cost = costs(*a);
                 let op_cost = a_dim.size();
 
@@ -159,7 +210,7 @@ impl<'a> CostFunction<Linalg> for LinalgCost<'a> {
                 self.fold_costs(enode, res, op_cost, &[a_cost])
             }
             Linalg::Softmax(a) => {
-                let a_dim = data(a).get_inner_dim();
+                let a_dim = data(a).unwrap_mat().dim;
                 let a_cost = costs(*a);
                 let op_cost = a_dim.size();
 
@@ -168,12 +219,16 @@ impl<'a> CostFunction<Linalg> for LinalgCost<'a> {
                 self.fold_costs(enode, res, op_cost, &[a_cost])
             }
             Linalg::Mul([a, b]) => {
-                let a_dim = data(a).get_inner_dim();
-                let b_dim = data(b).get_inner_dim();
+                let a_dim = data(a).unwrap_mat().dim;
+                let b_dim = data(b).unwrap_mat().dim;
 
                 let a_cost = costs(*a);
                 let b_cost = costs(*b);
-                let op_cost = a_dim.rows() * a_dim.cols() * b_dim.cols();
+                let op_cost = if data(a).unwrap_mat().diagonal {
+                    a_dim.cols() * b_dim.cols()
+                } else {
+                    a_dim.rows() * a_dim.cols() * b_dim.cols()
+                };
 
                 let res = a_cost.val.dot(&b_cost.val).to_shared();
 

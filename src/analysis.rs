@@ -1,7 +1,7 @@
 use anyhow::{Context as _, Error};
 use egg::*;
-use ndarray::{ArcArray1, ArcArray2, Array1};
-use ndarray_linalg::{Norm, SVD};
+use ndarray::{ArcArray1, ArcArray2};
+use ndarray_linalg::SVD as _;
 use std::{collections::HashMap, fmt::Display, rc::Rc, str::FromStr};
 
 use crate::{
@@ -71,26 +71,30 @@ pub struct TrueValue {
 }
 
 #[derive(Debug, Clone)]
+pub struct MatrixData {
+    pub dim: MatrixDim,
+    pub true_value: Option<TrueValue>,
+    pub diagonal: bool,
+}
+
+#[derive(Debug, Clone)]
 pub enum AnalysisData {
     Num(i32),
-    Mat {
-        dim: MatrixDim,
-        true_value: Option<TrueValue>,
-    },
+    Mat(MatrixData),
 }
 
 impl AnalysisData {
-    pub fn get_inner_dim(&self) -> MatrixDim {
+    pub fn unwrap_mat(&self) -> &MatrixData {
         match self {
-            AnalysisData::Mat { dim, .. } => *dim,
-            _ => panic!("Called get_inner_dim on non matrix analysis data"),
+            AnalysisData::Mat(data) => data,
+            _ => panic!("Called unwrap_mat on non matrix analysis data"),
         }
     }
 
-    pub fn get_inner_value(&self) -> Option<TrueValue> {
+    pub fn unwrap_num(&self) -> i32 {
         match self {
-            AnalysisData::Mat { true_value, .. } => true_value.clone(),
-            _ => panic!("Called get_inner_dim on non matrix analysis data"),
+            AnalysisData::Num(x) => *x,
+            _ => panic!("Called unwrap_num on non num analysis data"),
         }
     }
 }
@@ -101,14 +105,14 @@ impl Analysis<Linalg> for LinalgAnalysis {
     fn merge(&mut self, a: &mut Self::Data, b: Self::Data) -> DidMerge {
         match (a, b) {
             (
-                AnalysisData::Mat {
+                AnalysisData::Mat(MatrixData {
                     true_value: va @ None,
                     ..
-                },
-                AnalysisData::Mat {
+                }),
+                AnalysisData::Mat(MatrixData {
                     true_value: Some(val),
                     ..
-                },
+                }),
             ) => {
                 *va = Some(val);
                 DidMerge(true, false)
@@ -123,89 +127,127 @@ impl Analysis<Linalg> for LinalgAnalysis {
             Linalg::Num(val) => AnalysisData::Num(*val),
             Linalg::Mat(a) => {
                 let info = egraph.analysis.var_info.get(a).expect("Unknown symbol");
-                AnalysisData::Mat {
+                AnalysisData::Mat(MatrixData {
                     dim: info.dim,
                     true_value: Some(TrueValue {
                         val: info.value.clone(),
                         svd: info.svd.clone(),
                     }),
-                }
+                    diagonal: false,
+                })
             }
             Linalg::Add([a, b]) => {
-                let sum =
-                    data(a).get_inner_value().unwrap().val + data(b).get_inner_value().unwrap().val;
+                let a = data(a).unwrap_mat();
+                let b = data(b).unwrap_mat();
 
-                let (u, sigma, vt) = sum.svd(true, true).unwrap();
-                AnalysisData::Mat {
-                    dim: data(a).get_inner_dim(),
-                    true_value: Some(TrueValue {
-                        val: sum,
-                        svd: (u.unwrap().into(), sigma.into(), vt.unwrap().into()),
-                    }),
-                }
+                let true_value = a
+                    .true_value
+                    .as_ref()
+                    .zip(b.true_value.as_ref())
+                    .map(|(a, b)| {
+                        let sum = &a.val + &b.val;
+                        let (u, sigma, vt) = sum.svd(true, true).unwrap();
+
+                        TrueValue {
+                            val: sum.into(),
+                            svd: (u.unwrap().into(), sigma.into(), vt.unwrap().into()),
+                        }
+                    });
+
+                AnalysisData::Mat(MatrixData {
+                    dim: a.dim,
+                    true_value,
+                    diagonal: a.diagonal && b.diagonal,
+                })
             }
             Linalg::Mul([a, b]) => {
-                let r = data(a).get_inner_dim().rows();
-                let c = data(b).get_inner_dim().cols();
+                let a = data(a).unwrap_mat();
+                let b = data(b).unwrap_mat();
 
-                let true_value = match (data(a), data(b)) {
-                    (
-                        AnalysisData::Mat {
-                            true_value: Some(a),
-                            ..
-                        },
-                        AnalysisData::Mat {
-                            true_value: Some(b),
-                            ..
-                        },
-                    ) => {
-                        let product = a.val.dot(&b.val);
-                        let (u, sigma, vt) = product.svd(true, true).unwrap();
-                        Some(TrueValue {
-                            val: product.into(),
+                let true_value = a
+                    .true_value
+                    .as_ref()
+                    .zip(b.true_value.as_ref())
+                    .map(|(a, b)| {
+                        let prod = a.val.dot(&b.val);
+                        let (u, sigma, vt) = prod.svd(true, true).unwrap();
+
+                        TrueValue {
+                            val: prod.into(),
                             svd: (u.unwrap().into(), sigma.into(), vt.unwrap().into()),
-                        })
-                    }
-                    _ => None,
-                };
+                        }
+                    });
 
-                AnalysisData::Mat {
-                    dim: MatrixDim::new(r, c),
+                AnalysisData::Mat(MatrixData {
+                    dim: MatrixDim::new(a.dim.rows(), b.dim.cols()),
                     true_value,
-                }
+                    diagonal: a.diagonal && b.diagonal,
+                })
             }
-            Linalg::SVDMul([a, b, _]) => {
-                let r = data(a).get_inner_dim().rows();
-                let c = data(b).get_inner_dim().cols();
+            Linalg::SvdU([a, k]) => {
+                let r = data(a).unwrap_mat().dim.rows();
+                let k = data(k).unwrap_num() as usize;
 
-                AnalysisData::Mat {
-                    dim: MatrixDim::new(r, c),
+                AnalysisData::Mat(MatrixData {
+                    dim: MatrixDim::new(r, k),
                     true_value: None,
-                }
+                    diagonal: false,
+                })
+            }
+            Linalg::SvdD([_, k]) => {
+                let k = data(k).unwrap_num() as usize;
+
+                AnalysisData::Mat(MatrixData {
+                    dim: MatrixDim::new(k, k),
+                    true_value: None,
+                    diagonal: true,
+                })
+            }
+            Linalg::SvdVt([a, k]) => {
+                let c = data(a).unwrap_mat().dim.cols();
+                let k = data(k).unwrap_num() as usize;
+
+                AnalysisData::Mat(MatrixData {
+                    dim: MatrixDim::new(k, c),
+                    true_value: None,
+                    diagonal: false,
+                })
             }
             Linalg::Relu(a) => {
-                let val = relu(&data(a).get_inner_value().unwrap().val).to_shared();
-                let (u, sigma, vt) = val.svd(true, true).unwrap();
+                let a = data(a).unwrap_mat();
 
-                AnalysisData::Mat {
-                    dim: data(a).get_inner_dim(),
-                    true_value: Some(TrueValue {
-                        val,
+                let true_value = a.true_value.as_ref().map(|a| {
+                    let res = relu(&a.val);
+                    let (u, sigma, vt) = res.svd(true, true).unwrap();
+                    TrueValue {
+                        val: res.into(),
                         svd: (u.unwrap().into(), sigma.into(), vt.unwrap().into()),
-                    }),
-                }
+                    }
+                });
+
+                AnalysisData::Mat(MatrixData {
+                    dim: a.dim,
+                    true_value,
+                    diagonal: a.diagonal,
+                })
             }
             Linalg::Softmax(a) => {
-                let val = softmax(&data(a).get_inner_value().unwrap().val).to_shared();
-                let (u, sigma, vt) = val.svd(true, true).unwrap();
+                let a = data(a).unwrap_mat();
 
-                AnalysisData::Mat {
-                    dim: data(a).get_inner_dim(),
-                    true_value: Some(TrueValue {
-                        val,
+                let true_value = a.true_value.as_ref().map(|a| {
+                    let res = softmax(&a.val);
+                    let (u, sigma, vt) = res.svd(true, true).unwrap();
+                    TrueValue {
+                        val: res.into(),
                         svd: (u.unwrap().into(), sigma.into(), vt.unwrap().into()),
-                    }),
-                }
+                    }
+                });
+
+                AnalysisData::Mat(MatrixData {
+                    dim: a.dim,
+                    true_value,
+                    diagonal: false,
+                })
             }
         }
     }

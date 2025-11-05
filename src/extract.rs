@@ -12,10 +12,10 @@ pub struct MyExtractor<'a, CF: CostFunction<L>, L: Language, N: Analysis<L>> {
     egraph: &'a EGraph<L, N>,
 }
 
-struct CandidateExpr<CF: CostFunction<L>, L: Language> {
-    cost: CF::Cost,
-    node: L,
-    children: HashMap<Id, L>,
+pub struct CandidateExpr<CF: CostFunction<L>, L: Language> {
+    pub cost: CF::Cost,
+    pub node: L,
+    pub children: HashMap<Id, L>,
 }
 
 impl<CF: CostFunction<L>, L: Language> PartialEq for CandidateExpr<CF, L> {
@@ -66,10 +66,15 @@ where
     /// given eclass.
     pub fn find_best(&self, eclass: Id) -> (CF::Cost, RecExpr<L>) {
         let all_possible_costs = &self.costs[&self.egraph.find(eclass)];
+
         let best = all_possible_costs.iter().min().unwrap();
         let expr = best.node.build_recexpr(|id| best.children[&id].clone());
 
         (best.cost.clone(), expr)
+    }
+
+    pub fn all_costs(&self, eclass: Id) -> &Vec<CandidateExpr<CF, L>> {
+        &self.costs[&self.egraph.find(eclass)]
     }
 
     /// Find the cheapest e-node in the given e-class.

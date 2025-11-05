@@ -7,6 +7,7 @@ use ndarray_linalg::Norm;
 use crate::{
     analysis::{AnalysisData, LinalgAnalysis, VarInfo},
     lang::Linalg,
+    math::{make_truncated_svd, relu, softmax},
 };
 
 #[derive(Debug)]
@@ -71,23 +72,7 @@ impl<'a> LinalgCost<'a> {
             .expect("true value should exist in eclass")
             .val;
 
-        let num = (&true_val - approx).norm_l2();
-        let denom = true_val.norm_l2();
-
-        println!("approx L2 ({}): {}", id, approx.norm_l2());
-        println!("true value L2 ({}): {}", id, denom);
-
-        let ret = (&true_val - approx).norm_l2() / true_val.norm_l2();
-        // println!(
-        //     "({}) err: {} ({}/{}) ({:?}, {:?})",
-        //     id,
-        //     ret,
-        //     num,
-        //     denom,
-        //     true_val.dim(),
-        //     approx.dim()
-        // );
-        ret
+        (&true_val - approx).norm_l2() / true_val.norm_l2()
     }
 
     fn fold_costs(
@@ -144,18 +129,12 @@ impl<'a> CostFunction<Linalg> for LinalgCost<'a> {
                     + k * b_dim.cols()
                     + a_dim.rows() * k * b_dim.cols();
 
-                let (u, sigma, vt) = data(a).get_inner_value().unwrap().svd;
-
-                let u_k = u.slice(s![.., ..k]);
-                let sigma_k = Array2::from_diag(&sigma.slice(s![..k]));
-                let vt_k = vt.slice(s![..k, ..]);
+                let svd = data(a).get_inner_value().unwrap().svd;
+                let (u_k, sigma_k, vt_k) = make_truncated_svd(&svd, k);
 
                 let vtb = vt_k.dot(&b_cost.val);
-                // println!("vtb: {:?}", vtb.dim());
                 let scaled = sigma_k.dot(&vtb);
-                // println!("scaled: {:?}", scaled.dim());
                 let res = u_k.dot(&scaled).to_shared();
-                // println!("res: {:?}", res.dim());
 
                 self.fold_costs(enode, res, op_cost, &[a_cost, b_cost])
             }
@@ -175,7 +154,16 @@ impl<'a> CostFunction<Linalg> for LinalgCost<'a> {
                 let a_cost = costs(*a);
                 let op_cost = a_dim.size();
 
-                let res = a_cost.val.map(|x| f64::max(*x, 0.0)).to_shared();
+                let res = relu(&a_cost.val).to_shared();
+
+                self.fold_costs(enode, res, op_cost, &[a_cost])
+            }
+            Linalg::Softmax(a) => {
+                let a_dim = data(a).get_inner_dim();
+                let a_cost = costs(*a);
+                let op_cost = a_dim.size();
+
+                let res = softmax(&a_cost.val).to_shared();
 
                 self.fold_costs(enode, res, op_cost, &[a_cost])
             }

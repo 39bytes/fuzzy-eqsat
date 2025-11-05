@@ -6,6 +6,7 @@ define_language! {
         "*" = Mul([Id; 2]),
         "svdmul" = SVDMul([Id; 3]),
         "relu" = Relu(Id),
+        "softmax" = Softmax(Id),
         Num(i32),
         Mat(Symbol),
     }

@@ -11,36 +11,38 @@ use crate::analysis::{AnalysisData, MatrixDim, TrueValue, VarInfo};
 use crate::cost::LinalgCost;
 use crate::extract::MyExtractor;
 use crate::lang::Linalg;
-use crate::load::{Model, load_in_vec, load_model};
+use crate::model::{Model, export_params, load_model, load_test_set};
 
 mod analysis;
 mod cost;
 mod extract;
 mod lang;
-mod load;
+mod math;
+mod model;
 mod util;
 
 fn make_expr(
     model: Model,
-    avg_vec: Array2<f64>,
+    test_set: Array2<f64>,
 ) -> Result<(HashMap<Symbol, VarInfo>, RecExpr<Linalg>)> {
-    let input_size = model.layers[0].input_shape.0;
+    let input_size = model.layers[0].weights.shape()[0];
 
     let mut expr: RecExpr<Linalg> = RecExpr::default();
-    let in_vec = expr.add(Linalg::Mat(Symbol::from("in")));
+    let in_mat = expr.add(Linalg::Mat(Symbol::from("in")));
 
-    let (u, sigma, vt) = avg_vec.svd(true, true)?;
+    let (u, sigma, vt) = test_set.svd(true, true)?;
 
     let mut var_info = HashMap::from_iter([(
         Symbol::from("in"),
         VarInfo {
             dim: MatrixDim::new(input_size, 1),
             svd: (u.unwrap().into(), sigma.into(), vt.unwrap().into()),
-            value: avg_vec.into(),
+            value: test_set.into(),
         },
     )]);
 
-    let mut prev_layer_out = in_vec;
+    let mut prev_layer_out = in_mat;
+    let n_layers = model.layers.len();
 
     for (i, layer) in model.layers.into_iter().enumerate() {
         let (u, sigma, vt) = layer.weights.svd(true, true)?;
@@ -73,7 +75,11 @@ fn make_expr(
         let b = expr.add(Linalg::Mat(bias));
         let mul = expr.add(Linalg::Mul([w, prev_layer_out]));
         let add = expr.add(Linalg::Add([mul, b]));
-        prev_layer_out = expr.add(Linalg::Relu(add));
+        prev_layer_out = if i < n_layers - 1 {
+            expr.add(Linalg::Relu(add))
+        } else {
+            expr.add(Linalg::Softmax(add))
+        };
     }
 
     Ok((var_info, expr))
@@ -111,6 +117,7 @@ impl Applier<Linalg, LinalgAnalysis> for SvdApplier {
 
         while k > 0 {
             let k_node = egraph.add(Linalg::Num(k as i32));
+            println!("K ({}) node ID: {}", k, k_node);
             let svd_mul_k = egraph.add(Linalg::SVDMul([a, b, k_node]));
 
             if egraph.union(eclass, svd_mul_k) {
@@ -125,11 +132,6 @@ impl Applier<Linalg, LinalgAnalysis> for SvdApplier {
 }
 
 fn main() -> Result<()> {
-    // let a = array![[0.0, 0.0], [0.0, 0.0]];
-    // let (_, sigma, _) = a.svd(false, false).unwrap();
-    // println!("{}", sigma);
-    // Ok(())
-
     let mut rules: Vec<Rewrite<Linalg, LinalgAnalysis>> = vec![];
     rules.extend(rewrite!("matmul-assoc"; "(* (* ?a ?b) ?c)" <=> "(* ?a (* ?b ?c))"));
     rules.push(rewrite!("svd-mul"; "(* ?a ?b)" => {
@@ -140,7 +142,7 @@ fn main() -> Result<()> {
     }));
 
     let model = load_model("mnist_model_params.json").unwrap();
-    let in_vec = load_in_vec("vec.json").unwrap();
+    let in_vec = load_test_set("test_set.json", (10000, 784)).unwrap();
     let (var_info, expr) = make_expr(model, in_vec)?;
 
     println!("{}", expr.pretty(30));
@@ -165,29 +167,17 @@ fn main() -> Result<()> {
         &runner.egraph,
         LinalgCost {
             egraph: &runner.egraph,
-            var_info,
-            max_rel_error: 0.05,
+            var_info: var_info.clone(),
+            max_rel_error: 0.01,
         },
     );
-
-    // println!("{:?}", extractor.costs);
-    //
-    // for eclass in runner.egraph.classes() {
-    //     let best_k = extractor.find_best_k(eclass.id);
-    //
-    //     for (cost, node) in best_k {
-    //         if node.to_string().parse::<f64>().is_ok() {
-    //             continue;
-    //         }
-    //         println!("eclass: {} term: {}", eclass.id, node);
-    //         println!("{}", cost);
-    //     }
-    // }
 
     let (cost, best_expr) = extractor.find_best(runner.roots[0]);
     println!("Before: {}", expr);
     println!("Found best: {}", best_expr);
     println!("Cost: {:?}", cost);
+
+    export_params(&best_expr, &var_info, "optimized.json")?;
 
     Ok(())
 }

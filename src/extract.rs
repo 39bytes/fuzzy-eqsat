@@ -6,89 +6,6 @@ use std::{
 
 use egg::*;
 
-// #[derive(Clone)]
-// struct Cost<T: PartialOrd + Clone>(T);
-//
-// impl<T: PartialOrd + Clone> PartialEq for Cost<T> {
-//     fn eq(&self, other: &Self) -> bool {
-//         self.0.eq(&other.0)
-//     }
-// }
-//
-// impl<T: PartialOrd + Clone> Eq for Cost<T> {}
-//
-// impl<T: PartialOrd + Clone> PartialOrd for Cost<T> {
-//     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-//         Some(self.cmp(other))
-//     }
-// }
-//
-// impl<T: PartialOrd + Clone> Ord for Cost<T> {
-//     fn cmp(&self, other: &Self) -> Ordering {
-//         self.0.partial_cmp(&other.0).unwrap()
-//     }
-// }
-//
-//
-//
-// impl<T: PartialOrd + Clone, L: Language> PartialEq for CandidateExpr<T, L> {
-//     fn eq(&self, other: &Self) -> bool {
-//         self.cost.eq(&other.cost)
-//     }
-// }
-//
-// impl<T: PartialOrd + Clone, L: Language> PartialOrd for CandidateExpr<T, L> {
-//     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-//         Some(self.cmp(other))
-//     }
-// }
-//
-// impl<T: PartialOrd + Clone, L: Language> Ord for CandidateExpr<T, L> {
-//     fn cmp(&self, other: &Self) -> Ordering {
-//         self.cost.cmp(&other.cost)
-//     }
-// }
-
-// impl<T: PartialOrd + Clone, L: Language> Eq for CandidateExpr<T, L> {}
-//
-// #[derive(PartialEq, Eq)]
-// struct TopK<T: Ord> {
-//     k: usize,
-//     elems: BTreeSet<T>,
-// }
-//
-// impl<T: Ord> TopK<T> {
-//     pub fn new(k: usize) -> Self {
-//         TopK {
-//             k,
-//             elems: BTreeSet::new(),
-//         }
-//     }
-//
-//     pub fn push(&mut self, item: T) {
-//         self.elems.insert(item);
-//         if self.elems.len() > self.k {
-//             self.elems.pop_last();
-//         }
-//     }
-//
-//     pub fn len(&self) -> usize {
-//         self.elems.len()
-//     }
-//
-//     pub fn is_empty(&self) -> bool {
-//         self.elems.is_empty()
-//     }
-//
-//     pub fn smallest(&self) -> Option<&T> {
-//         self.elems.first()
-//     }
-//
-//     pub fn iter(&self) -> std::collections::btree_set::Iter<'_, T> {
-//         self.elems.iter()
-//     }
-// }
-
 pub struct MyExtractor<'a, CF: CostFunction<L>, L: Language, N: Analysis<L>> {
     cost_function: CF,
     costs: HashMap<Id, Vec<CandidateExpr<CF, L>>>,
@@ -118,16 +35,6 @@ impl<CF: CostFunction<L>, L: Language> Eq for CandidateExpr<CF, L> {}
 impl<CF: CostFunction<L>, L: Language> Ord for CandidateExpr<CF, L> {
     fn cmp(&self, other: &Self) -> Ordering {
         self.cost.partial_cmp(&other.cost).unwrap()
-    }
-}
-
-fn cmp<T: PartialOrd>(a: &Option<T>, b: &Option<T>) -> Ordering {
-    // None is high
-    match (a, b) {
-        (None, None) => Ordering::Equal,
-        (None, Some(_)) => Ordering::Greater,
-        (Some(_), None) => Ordering::Less,
-        (Some(a), Some(b)) => a.partial_cmp(b).unwrap(),
     }
 }
 

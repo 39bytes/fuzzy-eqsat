@@ -4,7 +4,10 @@ use ndarray::{ArcArray1, ArcArray2, Array1};
 use ndarray_linalg::{Norm, SVD};
 use std::{collections::HashMap, fmt::Display, rc::Rc, str::FromStr};
 
-use crate::lang::Linalg;
+use crate::{
+    lang::Linalg,
+    math::{relu, softmax},
+};
 
 #[derive(Debug, Eq, PartialEq, Ord, PartialOrd, Hash, Clone, Copy, Default)]
 pub struct MatrixDim(usize, usize);
@@ -181,15 +184,20 @@ impl Analysis<Linalg> for LinalgAnalysis {
                 }
             }
             Linalg::Relu(a) => {
-                let val = data(a)
-                    .get_inner_value()
-                    .unwrap()
-                    .val
-                    .map(|x| x.max(0.0))
-                    .to_shared();
+                let val = relu(&data(a).get_inner_value().unwrap().val).to_shared();
                 let (u, sigma, vt) = val.svd(true, true).unwrap();
 
-                println!("{}", val);
+                AnalysisData::Mat {
+                    dim: data(a).get_inner_dim(),
+                    true_value: Some(TrueValue {
+                        val,
+                        svd: (u.unwrap().into(), sigma.into(), vt.unwrap().into()),
+                    }),
+                }
+            }
+            Linalg::Softmax(a) => {
+                let val = softmax(&data(a).get_inner_value().unwrap().val).to_shared();
+                let (u, sigma, vt) = val.svd(true, true).unwrap();
 
                 AnalysisData::Mat {
                     dim: data(a).get_inner_dim(),

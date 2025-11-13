@@ -1,5 +1,5 @@
 use anyhow::Result;
-use egg::{EGraph, Id, RecExpr, Symbol};
+use egg::{EGraph, Id, Language, RecExpr, Symbol};
 use std::{
     collections::HashMap,
     fs::{self},
@@ -76,9 +76,12 @@ fn into_python(expr: &RecExpr<Linalg>) -> String {
         match &expr[cur] {
             Linalg::Add([a, b]) => format!("{} + {}", rec(expr, *a), rec(expr, *b)),
             Linalg::Mul([a, b]) => format!("np.dot({}, {})", rec(expr, *a), rec(expr, *b)),
-            Linalg::SvdU([a, k]) => "param(\"svd_u\")".into(),
-            Linalg::SvdD([a, k]) => "param(\"svd_d\")".into(),
-            Linalg::SvdVt([a, k]) => "param(\"svd_vt\")".into(),
+            Linalg::SvdU([_, _]) | Linalg::SvdD([_, _]) | Linalg::SvdVt([_, _]) => {
+                format!(
+                    "param(\"{}\")",
+                    expr[cur].build_recexpr(|id| expr[id].clone())
+                )
+            }
             Linalg::Relu(a) => format!("relu({})", rec(expr, *a)),
             Linalg::Softmax(a) => format!("softmax({})", rec(expr, *a)),
             Linalg::Num(i) => i.to_string(),
@@ -86,7 +89,7 @@ fn into_python(expr: &RecExpr<Linalg>) -> String {
                 if sym.as_str() == "x" {
                     "x".into()
                 } else {
-                    format!("param(\"{}\")", sym.to_string())
+                    format!("param(\"{}\")", sym)
                 }
             }
         }
@@ -137,8 +140,10 @@ pub fn export_params(
                     .slice_move(s![.., ..k])
                     .to_owned();
 
+                let e = node.build_recexpr(|id| expr.children[&id].clone());
+
                 HashMap::from([(
-                    "svd_u".into(),
+                    e.to_string(),
                     Parameter {
                         shape: trunc.shape().to_vec(),
                         val: trunc.into_iter().collect(),
@@ -151,8 +156,10 @@ pub fn export_params(
 
                 let trunc = Array2::from_diag(&a.true_value.clone().unwrap().svd.1.slice(s![..k]));
 
+                let e = node.build_recexpr(|id| expr.children[&id].clone());
+
                 HashMap::from([(
-                    "svd_d".into(),
+                    e.to_string(),
                     Parameter {
                         shape: trunc.shape().to_vec(),
                         val: trunc.into_iter().collect(),
@@ -172,8 +179,10 @@ pub fn export_params(
                     .slice_move(s![..k, ..])
                     .to_owned();
 
+                let e = node.build_recexpr(|id| expr.children[&id].clone());
+
                 HashMap::from([(
-                    "svd_vt".into(),
+                    e.to_string(),
                     Parameter {
                         shape: trunc.shape().to_vec(),
                         val: trunc.into_iter().collect(),

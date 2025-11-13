@@ -1,7 +1,8 @@
 use anyhow::{Context as _, Error};
 use egg::*;
 use ndarray::{ArcArray1, ArcArray2};
-use ndarray_linalg::SVD as _;
+use ndarray_linalg::{JobSvd, SVD as _, SVDDC as _};
+use serde::Serialize;
 use std::{collections::HashMap, fmt::Display, rc::Rc, str::FromStr};
 
 use crate::{
@@ -9,7 +10,7 @@ use crate::{
     math::{relu, softmax},
 };
 
-#[derive(Debug, Eq, PartialEq, Ord, PartialOrd, Hash, Clone, Copy, Default)]
+#[derive(Debug, Eq, PartialEq, Ord, PartialOrd, Hash, Clone, Copy, Default, Serialize)]
 pub struct MatrixDim(usize, usize);
 
 impl MatrixDim {
@@ -146,7 +147,7 @@ impl Analysis<Linalg> for LinalgAnalysis {
                     .zip(b.true_value.as_ref())
                     .map(|(a, b)| {
                         let sum = &a.val + &b.val;
-                        let (u, sigma, vt) = sum.svd(true, true).unwrap();
+                        let (u, sigma, vt) = sum.svddc(JobSvd::Some).unwrap();
 
                         TrueValue {
                             val: sum.into(),
@@ -170,7 +171,7 @@ impl Analysis<Linalg> for LinalgAnalysis {
                     .zip(b.true_value.as_ref())
                     .map(|(a, b)| {
                         let prod = a.val.dot(&b.val);
-                        let (u, sigma, vt) = prod.svd(true, true).unwrap();
+                        let (u, sigma, vt) = prod.svddc(JobSvd::Some).unwrap();
 
                         TrueValue {
                             val: prod.into(),
@@ -218,7 +219,7 @@ impl Analysis<Linalg> for LinalgAnalysis {
 
                 let true_value = a.true_value.as_ref().map(|a| {
                     let res = relu(&a.val);
-                    let (u, sigma, vt) = res.svd(true, true).unwrap();
+                    let (u, sigma, vt) = res.svddc(JobSvd::Some).unwrap();
                     TrueValue {
                         val: res.into(),
                         svd: (u.unwrap().into(), sigma.into(), vt.unwrap().into()),
@@ -236,7 +237,7 @@ impl Analysis<Linalg> for LinalgAnalysis {
 
                 let true_value = a.true_value.as_ref().map(|a| {
                     let res = softmax(&a.val);
-                    let (u, sigma, vt) = res.svd(true, true).unwrap();
+                    let (u, sigma, vt) = res.svddc(JobSvd::Some).unwrap();
                     TrueValue {
                         val: res.into(),
                         svd: (u.unwrap().into(), sigma.into(), vt.unwrap().into()),

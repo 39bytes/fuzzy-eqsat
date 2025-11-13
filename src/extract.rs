@@ -64,13 +64,13 @@ where
 
     /// Find the cheapest (lowest cost) represented `RecExpr` in the
     /// given eclass.
-    pub fn find_best(&self, eclass: Id) -> (CF::Cost, RecExpr<L>) {
+    pub fn find_best(&self, eclass: Id) -> (&CandidateExpr<CF, L>, RecExpr<L>) {
         let all_possible_costs = &self.costs[&self.egraph.find(eclass)];
 
         let best = all_possible_costs.iter().min().unwrap();
         let expr = best.node.build_recexpr(|id| best.children[&id].clone());
 
-        (best.cost.clone(), expr)
+        (best, expr)
     }
 
     pub fn all_costs(&self, eclass: Id) -> &Vec<CandidateExpr<CF, L>> {

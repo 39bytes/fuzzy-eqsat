@@ -1,4 +1,5 @@
 use anyhow::Result;
+use log::{debug, info};
 use ndarray::Array2;
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -8,10 +9,10 @@ use egg::*;
 use ndarray_linalg::*;
 
 use crate::analysis::{AnalysisData, MatrixData, MatrixDim, TrueValue, VarInfo};
-use crate::cost::LinalgCost;
+use crate::cost::{CostWithErrorBound, LinalgCost};
 use crate::extract::MyExtractor;
 use crate::lang::Linalg;
-use crate::model::{Model, load_model, load_test_set};
+use crate::model::{ModelLayer, load_model, load_test_set, output_python_file};
 
 mod analysis;
 mod cost;
@@ -22,35 +23,35 @@ mod model;
 mod util;
 
 fn make_expr(
-    model: Model,
+    layers: Vec<ModelLayer>,
     test_set: Array2<f64>,
 ) -> Result<(HashMap<Symbol, VarInfo>, RecExpr<Linalg>)> {
-    let input_size = model.layers[0].weights.shape()[0];
+    let input_size = layers[0].weights.shape()[0];
 
     let mut expr: RecExpr<Linalg> = RecExpr::default();
-    let in_mat = expr.add(Linalg::Mat(Symbol::from("in")));
+    let in_mat = expr.add(Linalg::Mat(Symbol::from("x")));
 
-    let (u, sigma, vt) = test_set.svd(true, true)?;
+    let (u, sigma, vt) = test_set.svddc(JobSvd::Some)?;
 
     let mut var_info = HashMap::from_iter([(
-        Symbol::from("in"),
+        Symbol::from("x"),
         VarInfo {
-            dim: MatrixDim::new(input_size, 1),
+            dim: MatrixDim::new(test_set.nrows(), test_set.ncols()),
             svd: (u.unwrap().into(), sigma.into(), vt.unwrap().into()),
             value: test_set.into(),
         },
     )]);
 
     let mut prev_layer_out = in_mat;
-    let n_layers = model.layers.len();
+    let n_layers = layers.len();
 
-    for (i, layer) in model.layers.into_iter().enumerate() {
-        let (u, sigma, vt) = layer.weights.svd(true, true)?;
+    for (i, layer) in layers.into_iter().enumerate() {
+        let (u, sigma, vt) = layer.weights.svddc(JobSvd::Some)?;
 
         let (rows, cols) = layer.weights.dim();
 
-        let weight_mat = Symbol::from(format!("w{}", i));
-        let bias = Symbol::from(format!("b{}", i));
+        let weight_mat = Symbol::from(format!("w[{}]", i));
+        let bias = Symbol::from(format!("b[{}]", i));
 
         var_info.insert(
             weight_mat,
@@ -61,7 +62,7 @@ fn make_expr(
             },
         );
 
-        let (u, sigma, vt) = layer.biases.svd(true, true)?;
+        let (u, sigma, vt) = layer.biases.svddc(JobSvd::Some)?;
         var_info.insert(
             bias,
             VarInfo {
@@ -136,7 +137,7 @@ impl Applier<Linalg, LinalgAnalysis> for SvdApplier {
     }
 }
 
-fn main() -> Result<()> {
+fn make_rules() -> Vec<Rewrite<Linalg, LinalgAnalysis>> {
     let mut rules: Vec<Rewrite<Linalg, LinalgAnalysis>> = vec![];
     // rules.extend(rewrite!("matmul-assoc"; "(* (* ?a ?b) ?c)" <=> "(* ?a (* ?b ?c))"));
     rules.push(rewrite!("svd-mul"; "(* ?a ?b)" => {
@@ -146,15 +147,30 @@ fn main() -> Result<()> {
         }
     }));
 
-    let model = load_model("mnist_model_params.json").unwrap();
-    let in_vec = load_test_set("test_set.json", (10000, 784)).unwrap();
-    let (var_info, expr) = make_expr(model, in_vec)?;
+    rules
+}
 
-    println!("{}", expr.pretty(30));
-    let var_info = Rc::new(var_info);
+fn model_to_egg(
+    model_path: &str,
+    test_set_path: &str,
+) -> Result<(HashMap<Symbol, VarInfo>, RecExpr<Linalg>)> {
+    let model = load_model(model_path)?;
+    let test_set = load_test_set(test_set_path, (10000, 784))?;
+
+    let (var_info, expr) = make_expr(model, test_set)?;
     for (sym, info) in var_info.iter() {
-        println!("{}: [dim: {:?}]", sym, info.dim);
+        debug!("{}: [dim: {:?}]", sym, info.dim);
     }
+
+    Ok((var_info, expr))
+}
+
+fn optimize(
+    expr: RecExpr<Linalg>,
+    var_info: Rc<HashMap<Symbol, VarInfo>>,
+    max_rel_error: f64,
+) -> Result<()> {
+    let rules = make_rules();
 
     let runner = Runner::<Linalg, LinalgAnalysis, ()>::new(LinalgAnalysis {
         var_info: var_info.clone(),
@@ -162,37 +178,46 @@ fn main() -> Result<()> {
     .with_expr(&expr)
     .run(&rules);
 
-    println!("Number of eclasses: {}", runner.egraph.classes().len());
+    info!("Number of eclasses: {}", runner.egraph.classes().len());
 
-    println!("Rendering");
+    info!("Rendering");
     util::render_egraph(&runner.egraph, ".", "test2");
 
-    println!("Extracting");
+    info!("Extracting");
     let extractor = MyExtractor::new(
         &runner.egraph,
         LinalgCost {
             egraph: &runner.egraph,
             var_info: var_info.clone(),
-            max_rel_error: 0.05,
+            max_rel_error,
         },
     );
 
-    for expr in extractor.all_costs(runner.roots[0]) {
-        let cost = &expr.cost;
-        let expr = expr.node.build_recexpr(|id| expr.children[&id].clone());
-        println!(
-            "cost: {}, error: {:?}, expr: {}",
-            cost.cost, cost.error, expr
-        );
-    }
+    // for expr in extractor.all_costs(runner.roots[0]) {
+    //     let cost = &expr.cost;
+    //     let expr = expr.node.build_recexpr(|id| expr.children[&id].clone());
+    //     println!(
+    //         "cost: {}, error: {:?}, expr: {}",
+    //         cost.cost, cost.error, expr
+    //     );
+    // }
 
-    let (cost, best_expr) = extractor.find_best(runner.roots[0]);
+    // Ok(extractor.find_best(runner.roots[0]))
+    let (best, best_expr) = extractor.find_best(runner.roots[0]);
+    println!("Best cost: {:?}", best.cost);
+    println!("Best: {}", best_expr);
 
-    println!("Before: {}", expr);
-    println!("Found best: {}", best_expr);
-    println!("Cost: {:?}", cost);
+    output_python_file(best, &best_expr, &runner.egraph, &var_info, "out.py")?;
 
-    // export_params(&best_expr, &var_info, "optimized.json")?;
+    Ok(())
+}
+
+fn main() -> Result<()> {
+    env_logger::init();
+
+    let (var_info, expr) = model_to_egg("mnist_model_params.json", "test_set.json")?;
+    let var_info = Rc::new(var_info);
+    optimize(expr, var_info.clone(), 0.05)?;
 
     Ok(())
 }

@@ -7,6 +7,7 @@ use std::rc::Rc;
 use analysis::LinalgAnalysis;
 use egg::*;
 use ndarray_linalg::*;
+use std::time::Instant;
 
 use crate::analysis::{AnalysisData, MatrixData, MatrixDim, TrueValue, VarInfo};
 use crate::cost::{CostWithErrorBound, LinalgCost};
@@ -172,17 +173,21 @@ fn optimize(
 ) -> Result<()> {
     let rules = make_rules();
 
+    let before = Instant::now();
     let runner = Runner::<Linalg, LinalgAnalysis, ()>::new(LinalgAnalysis {
         var_info: var_info.clone(),
     })
     .with_expr(&expr)
     .run(&rules);
 
+    println!("Analysis took: {}ms", before.elapsed().as_millis());
+
     info!("Number of eclasses: {}", runner.egraph.classes().len());
 
     info!("Rendering");
     util::render_egraph(&runner.egraph, ".", "test2");
 
+    let before = Instant::now();
     info!("Extracting");
     let extractor = MyExtractor::new(
         &runner.egraph,
@@ -192,22 +197,19 @@ fn optimize(
             max_rel_error,
         },
     );
+    println!("Extraction took: {}ms", before.elapsed().as_millis());
 
-    // for expr in extractor.all_costs(runner.roots[0]) {
-    //     let cost = &expr.cost;
-    //     let expr = expr.node.build_recexpr(|id| expr.children[&id].clone());
-    //     println!(
-    //         "cost: {}, error: {:?}, expr: {}",
-    //         cost.cost, cost.error, expr
-    //     );
-    // }
-
-    // Ok(extractor.find_best(runner.roots[0]))
     let (best, best_expr) = extractor.find_best(runner.roots[0]);
-    println!("Best cost: {:?}", best.cost);
     println!("Best: {}", best_expr);
+    println!(
+        "Cost: {}, Error: {}",
+        best.cost.cost,
+        best.cost.error.unwrap()
+    );
 
+    let before = Instant::now();
     output_python_file(best, &best_expr, &runner.egraph, &var_info, "out.py")?;
+    println!("Outputting python took: {}ms", before.elapsed().as_millis());
 
     Ok(())
 }
@@ -217,7 +219,7 @@ fn main() -> Result<()> {
 
     let (var_info, expr) = model_to_egg("mnist_model_params.json", "test_set.json")?;
     let var_info = Rc::new(var_info);
-    optimize(expr, var_info.clone(), 0.05)?;
+    optimize(expr, var_info.clone(), 0.01)?;
 
     Ok(())
 }

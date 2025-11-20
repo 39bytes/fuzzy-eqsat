@@ -6,7 +6,7 @@ use std::{
 
 use egg::*;
 
-pub struct MyExtractor<'a, CF: CostFunction<L>, L: Language, N: Analysis<L>> {
+pub struct CompleteExtractor<'a, CF: CostFunction<L>, L: Language, N: Analysis<L>> {
     cost_function: CF,
     costs: HashMap<Id, Vec<CandidateExpr<CF, L>>>,
     egraph: &'a EGraph<L, N>,
@@ -38,7 +38,8 @@ impl<CF: CostFunction<L>, L: Language> Ord for CandidateExpr<CF, L> {
     }
 }
 
-impl<'a, CF, L, N> MyExtractor<'a, CF, L, N>
+#[allow(dead_code)]
+impl<'a, CF, L, N> CompleteExtractor<'a, CF, L, N>
 where
     CF: CostFunction<L>,
     L: Language,
@@ -52,7 +53,7 @@ where
     /// eclass.
     pub fn new(egraph: &'a EGraph<L, N>, cost_function: CF) -> Self {
         let costs = HashMap::default();
-        let mut extractor = MyExtractor {
+        let mut extractor = CompleteExtractor {
             costs,
             egraph,
             cost_function,

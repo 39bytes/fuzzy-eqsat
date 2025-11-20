@@ -10,8 +10,8 @@ use ndarray_linalg::*;
 use std::time::Instant;
 
 use crate::analysis::{AnalysisData, MatrixData, MatrixDim, TrueValue, VarInfo};
-use crate::cost::{CostWithErrorBound, LinalgCost};
-use crate::extract::MyExtractor;
+use crate::cost::LinalgCost;
+use crate::extract::CompleteExtractor;
 use crate::lang::Linalg;
 use crate::model::{ModelLayer, load_model, load_test_set, output_python_file};
 
@@ -27,8 +27,6 @@ fn make_expr(
     layers: Vec<ModelLayer>,
     test_set: Array2<f64>,
 ) -> Result<(HashMap<Symbol, VarInfo>, RecExpr<Linalg>)> {
-    let input_size = layers[0].weights.shape()[0];
-
     let mut expr: RecExpr<Linalg> = RecExpr::default();
     let in_mat = expr.add(Linalg::Mat(Symbol::from("x")));
 
@@ -99,8 +97,8 @@ impl Applier<Linalg, LinalgAnalysis> for SvdApplier {
         egraph: &mut EGraph<Linalg, LinalgAnalysis>,
         eclass: Id,
         subst: &Subst,
-        searcher_ast: Option<&PatternAst<Linalg>>,
-        rule_name: Symbol,
+        _: Option<&PatternAst<Linalg>>,
+        _: Symbol,
     ) -> Vec<Id> {
         let a = subst[self.a];
         let b = subst[self.b];
@@ -189,7 +187,7 @@ fn optimize(
 
     let before = Instant::now();
     info!("Extracting");
-    let extractor = MyExtractor::new(
+    let extractor = CompleteExtractor::new(
         &runner.egraph,
         LinalgCost {
             egraph: &runner.egraph,

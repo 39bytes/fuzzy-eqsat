@@ -21,8 +21,6 @@ pub struct RawLayer {
     biases: Vec<f64>,
     input_shape: usize,
     output_shape: usize,
-    layer_type: String,
-    activation: String,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -35,10 +33,6 @@ pub struct ModelLayer {
 pub struct TestSet {
     pub mat: Vec<Vec<f64>>,
 }
-
-// relu(W0 * i + b0)
-// |> relu(W1 * _ + b1)
-// |> ...
 
 pub fn load_model(filename: &str) -> Result<Vec<ModelLayer>> {
     let contents = fs::read_to_string(filename)?;
@@ -65,17 +59,11 @@ pub fn load_test_set(filename: &str, shape: (usize, usize)) -> Result<Array2<f64
     Ok(out.map(|x| *x / 255.0).reversed_axes())
 }
 
-#[derive(Serialize)]
-enum LayerWeight {
-    Mat(Array2<f64>),
-    Svd(Array2<f64>),
-}
-
 fn into_python(expr: &RecExpr<Linalg>) -> String {
     fn rec(expr: &RecExpr<Linalg>, cur: Id) -> String {
         match &expr[cur] {
             Linalg::Add([a, b]) => format!("{} + {}", rec(expr, *a), rec(expr, *b)),
-            Linalg::Mul([a, b]) => format!("np.dot({}, {})", rec(expr, *a), rec(expr, *b)),
+            Linalg::Mul([a, b]) => format!("{} @ {}", rec(expr, *a), rec(expr, *b)),
             Linalg::SvdU([_, _]) | Linalg::SvdD([_, _]) | Linalg::SvdVt([_, _]) => {
                 format!(
                     "param(\"{}\")",
@@ -191,7 +179,7 @@ pub fn export_params(
             }
             Linalg::Relu(a) => rec(&expr.children[a], expr, egraph, var_info),
             Linalg::Softmax(a) => rec(&expr.children[a], expr, egraph, var_info),
-            Linalg::Num(i) => HashMap::new(),
+            Linalg::Num(_) => HashMap::new(),
             Linalg::Mat(sym) => {
                 if sym.as_str() != "x" {
                     let val = var_info[sym].value.to_owned();

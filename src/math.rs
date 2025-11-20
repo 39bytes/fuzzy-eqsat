@@ -1,13 +1,8 @@
-use ndarray::{ArcArray1, ArcArray2, Array2, ArrayView2, s};
+use ndarray::{ArcArray2, Array2};
 
 pub fn relu(a: &ArcArray2<f64>) -> Array2<f64> {
     a.map(|x| f64::max(*x, 0.0))
 }
-
-// def softmax(x: np.ndarray):
-//     x = x - np.max(x, axis=0, keepdims=True)
-//     e = np.exp(x)
-//     return e / np.sum(e, axis=0, keepdims=True)
 
 pub fn softmax(input: &ArcArray2<f64>) -> Array2<f64> {
     let (rows, cols) = input.dim();
@@ -33,17 +28,6 @@ pub fn softmax(input: &ArcArray2<f64>) -> Array2<f64> {
     }
 
     output
-}
-
-pub fn make_truncated_svd<'a>(
-    (u, sigma, vt): &'a (ArcArray2<f64>, ArcArray1<f64>, ArcArray2<f64>),
-    k: usize,
-) -> (ArrayView2<'a, f64>, Array2<f64>, ArrayView2<'a, f64>) {
-    let u_k = u.slice(s![.., ..k]);
-    let sigma_k = Array2::from_diag(&sigma.slice(s![..k]));
-    let vt_k = vt.slice(s![..k, ..]);
-
-    (u_k, sigma_k, vt_k)
 }
 
 #[cfg(test)]

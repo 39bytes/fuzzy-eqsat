@@ -1,7 +1,7 @@
 use anyhow::{Context as _, Error};
 use egg::*;
 use ndarray::{ArcArray1, ArcArray2};
-use ndarray_linalg::{JobSvd, SVD as _, SVDDC as _};
+use ndarray_linalg::{JobSvd, SVDDC as _};
 use serde::Serialize;
 use std::{collections::HashMap, fmt::Display, rc::Rc, str::FromStr};
 
@@ -24,10 +24,6 @@ impl MatrixDim {
 
     pub fn cols(&self) -> usize {
         self.1
-    }
-
-    pub fn max_rank(&self) -> usize {
-        self.rows().min(self.cols())
     }
 
     pub fn size(&self) -> usize {

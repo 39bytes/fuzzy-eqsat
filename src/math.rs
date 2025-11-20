@@ -30,6 +30,11 @@ pub fn softmax(input: &ArcArray2<f64>) -> Array2<f64> {
     output
 }
 
+pub fn prune(mat: &ArcArray2<f64>, precision: i32) -> ArcArray2<f64> {
+    let threshold = 10.0f64.powf(precision as f64);
+    mat.map(|x| if *x < threshold { 0.0 } else { *x }).into()
+}
+
 #[cfg(test)]
 mod test {
     use super::*;

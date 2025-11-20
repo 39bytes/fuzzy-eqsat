@@ -136,6 +136,41 @@ impl Applier<Linalg, LinalgAnalysis> for SvdApplier {
     }
 }
 
+struct PruneApplier {
+    a: Var,
+}
+
+impl Applier<Linalg, LinalgAnalysis> for PruneApplier {
+    fn apply_one(
+        &self,
+        egraph: &mut EGraph<Linalg, LinalgAnalysis>,
+        eclass: Id,
+        subst: &Subst,
+        _: Option<&PatternAst<Linalg>>,
+        _: Symbol,
+    ) -> Vec<Id> {
+        let a = subst[self.a];
+
+        match egraph[eclass].data {
+            AnalysisData::Mat(_) => {}
+            _ => return vec![],
+        }
+
+        let mut changed = vec![];
+
+        for precision in -6..-2 {
+            let precision_node = egraph.add(Linalg::Num(precision));
+            let prune_node = egraph.add(Linalg::Prune([a, precision_node]));
+
+            if egraph.union(eclass, prune_node) {
+                changed.push(prune_node);
+            }
+        }
+
+        changed
+    }
+}
+
 fn make_rules() -> Vec<Rewrite<Linalg, LinalgAnalysis>> {
     let mut rules: Vec<Rewrite<Linalg, LinalgAnalysis>> = vec![];
     // rules.extend(rewrite!("matmul-assoc"; "(* (* ?a ?b) ?c)" <=> "(* ?a (* ?b ?c))"));
@@ -143,6 +178,11 @@ fn make_rules() -> Vec<Rewrite<Linalg, LinalgAnalysis>> {
         SvdApplier {
             a: "?a".parse().unwrap(),
             b: "?b".parse().unwrap(),
+        }
+    }));
+    rules.push(rewrite!("prune"; "?a" => {
+        PruneApplier {
+            a: "?a".parse().unwrap(),
         }
     }));
 

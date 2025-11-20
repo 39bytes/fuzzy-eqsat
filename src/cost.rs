@@ -7,7 +7,7 @@ use ndarray_linalg::Norm;
 use crate::{
     analysis::{LinalgAnalysis, VarInfo},
     lang::Linalg,
-    math::{relu, softmax},
+    math::{prune, relu, softmax},
 };
 
 #[derive(Debug)]
@@ -107,31 +107,6 @@ impl<'a> CostFunction<Linalg> for LinalgCost<'a> {
                 val: self.var_info[a].value.clone(),
             },
             Linalg::Num(_) => CostWithErrorBound::default(),
-            // Linalg::SVDMul([a, b, k]) => {
-            //     let a_cost = costs(*a);
-            //     let b_cost = costs(*b);
-            //     let a_dim = data(a).unwrap_dim();
-            //     let b_dim = data(b).unwrap_dim();
-            //     let k = match data(k) {
-            //         AnalysisData::Num(x) => x,
-            //         _ => panic!("oops"),
-            //     } as usize;
-            //
-            //     // n x m * m x l
-            //     // => n x k * k x k * k x m * m x l
-            //     let op_cost = k * b_dim.rows() * b_dim.cols()
-            //         + k * b_dim.cols()
-            //         + a_dim.rows() * k * b_dim.cols();
-            //
-            //     let svd = data(a).unwrap_true_val().unwrap().svd;
-            //     let (u_k, sigma_k, vt_k) = make_truncated_svd(&svd, k);
-            //
-            //     let vtb = vt_k.dot(&b_cost.val);
-            //     let scaled = sigma_k.dot(&vtb);
-            //     let res = u_k.dot(&scaled).to_shared();
-            //
-            //     self.fold_costs(enode, res, op_cost, &[a_cost, b_cost])
-            // }
             Linalg::SvdU([a, k]) => {
                 let a_cost = costs(*a);
                 let k = data(k).unwrap_num();
@@ -188,6 +163,14 @@ impl<'a> CostFunction<Linalg> for LinalgCost<'a> {
                     max_rel_error: self.max_rel_error,
                     val: vt.slice_move(s![..k, ..]),
                 }
+            }
+            Linalg::Prune([a, k]) => {
+                let a_cost = costs(*a);
+                let k = data(k).unwrap_num();
+
+                let res = prune(&a_cost.val, k);
+
+                self.fold_costs(enode, res, 0, &[a_cost])
             }
             Linalg::Add([a, b]) => {
                 let a_dim = data(a).unwrap_mat().dim;

@@ -72,6 +72,7 @@ pub struct MatrixData {
     pub dim: MatrixDim,
     pub true_value: Option<TrueValue>,
     pub diagonal: bool,
+    pub zeroes: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -131,6 +132,7 @@ impl Analysis<Linalg> for LinalgAnalysis {
                         svd: info.svd.clone(),
                     }),
                     diagonal: false,
+                    zeroes: 0,
                 })
             }
             Linalg::Add([a, b]) => {
@@ -155,6 +157,7 @@ impl Analysis<Linalg> for LinalgAnalysis {
                     dim: a.dim,
                     true_value,
                     diagonal: a.diagonal && b.diagonal,
+                    zeroes: 0,
                 })
             }
             Linalg::Mul([a, b]) => {
@@ -179,6 +182,7 @@ impl Analysis<Linalg> for LinalgAnalysis {
                     dim: MatrixDim::new(a.dim.rows(), b.dim.cols()),
                     true_value,
                     diagonal: a.diagonal && b.diagonal,
+                    zeroes: 0,
                 })
             }
             Linalg::SvdU([a, k]) => {
@@ -189,6 +193,7 @@ impl Analysis<Linalg> for LinalgAnalysis {
                     dim: MatrixDim::new(r, k),
                     true_value: None,
                     diagonal: false,
+                    zeroes: 0,
                 })
             }
             Linalg::SvdD([_, k]) => {
@@ -198,6 +203,7 @@ impl Analysis<Linalg> for LinalgAnalysis {
                     dim: MatrixDim::new(k, k),
                     true_value: None,
                     diagonal: true,
+                    zeroes: 0,
                 })
             }
             Linalg::SvdVt([a, k]) => {
@@ -208,6 +214,18 @@ impl Analysis<Linalg> for LinalgAnalysis {
                     dim: MatrixDim::new(k, c),
                     true_value: None,
                     diagonal: false,
+                    zeroes: 0,
+                })
+            }
+            Linalg::Prune([a, k]) => {
+                let a = data(a).unwrap_mat();
+                let k = data(k).unwrap_num();
+
+                AnalysisData::Mat(MatrixData {
+                    dim: a.dim,
+                    true_value: None,
+                    diagonal: false,
+                    zeroes: count_pruned_zeroes(a.true_value.clone().unwrap().val, k),
                 })
             }
             Linalg::Relu(a) => {
@@ -226,6 +244,7 @@ impl Analysis<Linalg> for LinalgAnalysis {
                     dim: a.dim,
                     true_value,
                     diagonal: a.diagonal,
+                    zeroes: 0,
                 })
             }
             Linalg::Softmax(a) => {
@@ -244,8 +263,14 @@ impl Analysis<Linalg> for LinalgAnalysis {
                     dim: a.dim,
                     true_value,
                     diagonal: false,
+                    zeroes: 0,
                 })
             }
         }
     }
+}
+
+fn count_pruned_zeroes(mat: ArcArray2<f64>, precision: i32) -> usize {
+    let threshold = 10.0f64.powf(precision as f64);
+    mat.iter().filter(|x| **x < threshold).count()
 }

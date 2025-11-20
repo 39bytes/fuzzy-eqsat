@@ -13,6 +13,7 @@ use crate::{
     cost::LinalgCost,
     extract::CandidateExpr,
     lang::Linalg,
+    math::prune,
 };
 
 #[derive(Deserialize, Debug)]
@@ -64,7 +65,10 @@ fn into_python(expr: &RecExpr<Linalg>) -> String {
         match &expr[cur] {
             Linalg::Add([a, b]) => format!("{} + {}", rec(expr, *a), rec(expr, *b)),
             Linalg::Mul([a, b]) => format!("{} @ {}", rec(expr, *a), rec(expr, *b)),
-            Linalg::SvdU([_, _]) | Linalg::SvdD([_, _]) | Linalg::SvdVt([_, _]) => {
+            Linalg::SvdU([_, _])
+            | Linalg::SvdD([_, _])
+            | Linalg::SvdVt([_, _])
+            | Linalg::Prune([_, _]) => {
                 format!(
                     "param(\"{}\")",
                     expr[cur].build_recexpr(|id| expr[id].clone())
@@ -174,6 +178,22 @@ pub fn export_params(
                     Parameter {
                         shape: trunc.shape().to_vec(),
                         val: trunc.into_iter().collect(),
+                    },
+                )])
+            }
+            Linalg::Prune([a, k]) => {
+                let a = egraph[*a].data.unwrap_mat();
+                let k = egraph[*k].data.unwrap_num();
+
+                let pruned = prune(&a.true_value.clone().unwrap().val, k);
+
+                let e = node.build_recexpr(|id| expr.children[&id].clone());
+
+                HashMap::from([(
+                    e.to_string(),
+                    Parameter {
+                        shape: pruned.shape().to_vec(),
+                        val: pruned.into_iter().collect(),
                     },
                 )])
             }

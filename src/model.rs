@@ -1,15 +1,17 @@
 use anyhow::Result;
 use egg::{EGraph, Id, Language, RecExpr, Symbol};
 use std::{
+    cell::RefCell,
     collections::HashMap,
     fs::{self},
+    rc::Rc,
 };
 
 use ndarray::{Array2, s};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    analysis::{LinalgAnalysis, VarInfo},
+    analysis::{LinalgAnalysis, MatrixValue},
     cost::LinalgCost,
     extract::CandidateExpr,
     lang::Linalg,
@@ -68,7 +70,7 @@ fn into_python(expr: &RecExpr<Linalg>) -> String {
             Linalg::SvdU([_, _])
             | Linalg::SvdD([_, _])
             | Linalg::SvdVt([_, _])
-            | Linalg::Prune([_, _]) => {
+            | Linalg::Pruned([_, _]) => {
                 format!(
                     "param(\"{}\")",
                     expr[cur].build_recexpr(|id| expr[id].clone())
@@ -104,14 +106,14 @@ struct Parameter {
 pub fn export_params(
     expr: &CandidateExpr<LinalgCost, Linalg>,
     egraph: &EGraph<Linalg, LinalgAnalysis>,
-    var_info: &HashMap<Symbol, VarInfo>,
+    var_info: &Rc<RefCell<HashMap<Symbol, MatrixValue>>>,
     filename: &str,
 ) -> Result<()> {
     fn rec(
         node: &Linalg,
         expr: &CandidateExpr<LinalgCost, Linalg>,
         egraph: &EGraph<Linalg, LinalgAnalysis>,
-        var_info: &HashMap<Symbol, VarInfo>,
+        var_info: &Rc<RefCell<HashMap<Symbol, MatrixValue>>>,
     ) -> HashMap<String, Parameter> {
         match node {
             Linalg::Add([a, b]) | Linalg::Mul([a, b]) => {
@@ -124,11 +126,12 @@ pub fn export_params(
                 let k = egraph[*k].data.unwrap_num() as usize;
 
                 let trunc = a
-                    .true_value
-                    .clone()
+                    .canonical_value
+                    .as_ref()
                     .unwrap()
-                    .svd
+                    .svd()
                     .0
+                    .clone()
                     .slice_move(s![.., ..k])
                     .to_owned();
 
@@ -146,7 +149,8 @@ pub fn export_params(
                 let a = egraph[*a].data.unwrap_mat();
                 let k = egraph[*k].data.unwrap_num() as usize;
 
-                let trunc = Array2::from_diag(&a.true_value.clone().unwrap().svd.1.slice(s![..k]));
+                let trunc =
+                    Array2::from_diag(&a.canonical_value.clone().unwrap().svd().1.slice(s![..k]));
 
                 let e = node.build_recexpr(|id| expr.children[&id].clone());
 
@@ -163,11 +167,12 @@ pub fn export_params(
                 let k = egraph[*k].data.unwrap_num() as usize;
 
                 let trunc = a
-                    .true_value
-                    .clone()
+                    .canonical_value
+                    .as_ref()
                     .unwrap()
-                    .svd
+                    .svd()
                     .2
+                    .clone()
                     .slice_move(s![..k, ..])
                     .to_owned();
 
@@ -181,11 +186,11 @@ pub fn export_params(
                     },
                 )])
             }
-            Linalg::Prune([a, k]) => {
+            Linalg::Pruned([a, k]) => {
                 let a = egraph[*a].data.unwrap_mat();
                 let k = egraph[*k].data.unwrap_num();
 
-                let pruned = prune(&a.true_value.clone().unwrap().val, k);
+                let pruned = prune(&a.canonical_value.clone().unwrap().val(), k);
 
                 let e = node.build_recexpr(|id| expr.children[&id].clone());
 
@@ -202,7 +207,7 @@ pub fn export_params(
             Linalg::Num(_) => HashMap::new(),
             Linalg::Mat(sym) => {
                 if sym.as_str() != "x" {
-                    let val = var_info[sym].value.to_owned();
+                    let val = var_info.borrow()[sym].val().to_owned();
 
                     HashMap::from([(
                         sym.to_string(),
@@ -231,7 +236,7 @@ pub fn output_python_file(
     best: &CandidateExpr<LinalgCost, Linalg>,
     expr: &RecExpr<Linalg>,
     egraph: &EGraph<Linalg, LinalgAnalysis>,
-    var_info: &HashMap<Symbol, VarInfo>,
+    var_info: &Rc<RefCell<HashMap<Symbol, MatrixValue>>>,
     output_path: &str,
 ) -> Result<()> {
     let py_expr = into_python(expr);

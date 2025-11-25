@@ -45,12 +45,6 @@ where
     L: Language,
     N: Analysis<L>,
 {
-    /// Create a new `MyExtractor` given an `EGraph` and a
-    /// `CostFunction`.
-    ///
-    /// The extraction does all the work on creation, so this function
-    /// performs the greedy search for cheapest representative of each
-    /// eclass.
     pub fn new(egraph: &'a EGraph<L, N>, cost_function: CF) -> Self {
         let costs = HashMap::default();
         let mut extractor = CompleteExtractor {
@@ -63,8 +57,6 @@ where
         extractor
     }
 
-    /// Find the cheapest (lowest cost) represented `RecExpr` in the
-    /// given eclass.
     pub fn find_best(&self, eclass: Id) -> (&CandidateExpr<CF, L>, RecExpr<L>) {
         let all_possible_costs = &self.costs[&self.egraph.find(eclass)];
 
@@ -78,13 +70,11 @@ where
         &self.costs[&self.egraph.find(eclass)]
     }
 
-    /// Find the cheapest e-node in the given e-class.
     pub fn find_best_node(&self, eclass: Id) -> &L {
         let possible_costs = &self.costs[&self.egraph.find(eclass)];
         &possible_costs.iter().min().unwrap().node
     }
 
-    /// Find the cost of the term that would be extracted from this e-class.
     pub fn find_best_cost(&self, eclass: Id) -> CF::Cost {
         let possible_costs = &self.costs[&self.egraph.find(eclass)];
         possible_costs.iter().min().unwrap().cost.clone()

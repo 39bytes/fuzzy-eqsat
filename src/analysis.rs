@@ -1,14 +1,22 @@
 use anyhow::{Context as _, Error};
 use egg::*;
-use ndarray::{ArcArray1, ArcArray2};
+use ndarray::{ArcArray1, ArcArray2, Array2};
 use ndarray_linalg::{JobSvd, SVDDC as _};
 use serde::Serialize;
-use std::{collections::HashMap, fmt::Display, rc::Rc, str::FromStr};
+use std::{
+    cell::{OnceCell, RefCell},
+    collections::{HashMap, HashSet},
+    fmt::Display,
+    rc::Rc,
+    str::FromStr,
+};
 
 use crate::{
     lang::Linalg,
     math::{relu, softmax},
 };
+
+pub const MODEL_INPUT: &str = "x";
 
 #[derive(Debug, Eq, PartialEq, Ord, PartialOrd, Hash, Clone, Copy, Default, Serialize)]
 pub struct MatrixDim(usize, usize);
@@ -49,28 +57,51 @@ impl FromStr for MatrixDim {
     }
 }
 
-#[derive(Clone, Debug)]
-pub struct VarInfo {
-    pub dim: MatrixDim,
-    pub svd: (ArcArray2<f64>, ArcArray1<f64>, ArcArray2<f64>),
-    pub value: ArcArray2<f64>,
+type SVD = (ArcArray2<f64>, ArcArray1<f64>, ArcArray2<f64>);
+
+#[derive(Debug, Clone)]
+pub struct MatrixValue {
+    svd: OnceCell<SVD>,
+    val: ArcArray2<f64>,
+}
+
+impl MatrixValue {
+    pub fn new(val: ArcArray2<f64>) -> Self {
+        MatrixValue {
+            val: val.clone(),
+            svd: OnceCell::new(),
+        }
+    }
+
+    pub fn svd(&self) -> &SVD {
+        self.svd.get_or_init(|| {
+            let (u, sigma, vt) = self.val.svddc(JobSvd::Some).unwrap();
+            (u.unwrap().into(), sigma.into(), vt.unwrap().into())
+        })
+    }
+
+    pub fn val(&self) -> &ArcArray2<f64> {
+        &self.val
+    }
+
+    pub fn dim(&self) -> MatrixDim {
+        let (rows, cols) = self.val.dim();
+        MatrixDim::new(rows, cols)
+    }
 }
 
 #[derive(Default, Debug)]
 pub struct LinalgAnalysis {
-    pub var_info: Rc<HashMap<Symbol, VarInfo>>,
-}
-
-#[derive(Debug, Clone)]
-pub struct TrueValue {
-    pub val: ArcArray2<f64>,
-    pub svd: (ArcArray2<f64>, ArcArray1<f64>, ArcArray2<f64>),
+    pub var_info: Rc<RefCell<HashMap<Symbol, MatrixValue>>>,
+    pub prune_count: usize,
+    pub pruned_eclasses: HashSet<Id>,
 }
 
 #[derive(Debug, Clone)]
 pub struct MatrixData {
     pub dim: MatrixDim,
-    pub true_value: Option<TrueValue>,
+    pub canonical_value: Option<MatrixValue>,
+    pub is_const: bool,
     pub diagonal: bool,
     pub zeroes: usize,
 }
@@ -104,11 +135,11 @@ impl Analysis<Linalg> for LinalgAnalysis {
         match (a, b) {
             (
                 AnalysisData::Mat(MatrixData {
-                    true_value: va @ None,
+                    canonical_value: va @ None,
                     ..
                 }),
                 AnalysisData::Mat(MatrixData {
-                    true_value: Some(val),
+                    canonical_value: Some(val),
                     ..
                 }),
             ) => {
@@ -124,13 +155,16 @@ impl Analysis<Linalg> for LinalgAnalysis {
         match enode {
             Linalg::Num(val) => AnalysisData::Num(*val),
             Linalg::Mat(a) => {
-                let info = egraph.analysis.var_info.get(a).expect("Unknown symbol");
+                let var_info = egraph.analysis.var_info.borrow();
+                let val = var_info
+                    .get(a)
+                    .unwrap_or_else(|| panic!("Unknown symbol {}", a));
+                let is_const = a.as_str() != MODEL_INPUT;
+
                 AnalysisData::Mat(MatrixData {
-                    dim: info.dim,
-                    true_value: Some(TrueValue {
-                        val: info.value.clone(),
-                        svd: info.svd.clone(),
-                    }),
+                    dim: val.dim(),
+                    canonical_value: Some(val.clone()),
+                    is_const,
                     diagonal: false,
                     zeroes: 0,
                 })
@@ -138,24 +172,12 @@ impl Analysis<Linalg> for LinalgAnalysis {
             Linalg::Add([a, b]) => {
                 let a = data(a).unwrap_mat();
                 let b = data(b).unwrap_mat();
-
-                let true_value = a
-                    .true_value
-                    .as_ref()
-                    .zip(b.true_value.as_ref())
-                    .map(|(a, b)| {
-                        let sum = &a.val + &b.val;
-                        let (u, sigma, vt) = sum.svddc(JobSvd::Some).unwrap();
-
-                        TrueValue {
-                            val: sum.into(),
-                            svd: (u.unwrap().into(), sigma.into(), vt.unwrap().into()),
-                        }
-                    });
+                let canonical_value = compute_canonical2(a, b, |a, b| a + b);
 
                 AnalysisData::Mat(MatrixData {
                     dim: a.dim,
-                    true_value,
+                    canonical_value,
+                    is_const: false,
                     diagonal: a.diagonal && b.diagonal,
                     zeroes: 0,
                 })
@@ -164,104 +186,86 @@ impl Analysis<Linalg> for LinalgAnalysis {
                 let a = data(a).unwrap_mat();
                 let b = data(b).unwrap_mat();
 
-                let true_value = a
-                    .true_value
-                    .as_ref()
-                    .zip(b.true_value.as_ref())
-                    .map(|(a, b)| {
-                        let prod = a.val.dot(&b.val);
-                        let (u, sigma, vt) = prod.svddc(JobSvd::Some).unwrap();
-
-                        TrueValue {
-                            val: prod.into(),
-                            svd: (u.unwrap().into(), sigma.into(), vt.unwrap().into()),
-                        }
-                    });
+                let canonical_value = compute_canonical2(a, b, |a, b| a.dot(b));
 
                 AnalysisData::Mat(MatrixData {
                     dim: MatrixDim::new(a.dim.rows(), b.dim.cols()),
-                    true_value,
+                    canonical_value,
+                    is_const: false,
                     diagonal: a.diagonal && b.diagonal,
                     zeroes: 0,
                 })
             }
             Linalg::SvdU([a, k]) => {
-                let r = data(a).unwrap_mat().dim.rows();
+                let a = data(a).unwrap_mat();
                 let k = data(k).unwrap_num() as usize;
 
                 AnalysisData::Mat(MatrixData {
-                    dim: MatrixDim::new(r, k),
-                    true_value: None,
+                    dim: MatrixDim::new(a.dim.rows(), k),
+                    canonical_value: None,
+                    is_const: a.is_const,
                     diagonal: false,
                     zeroes: 0,
                 })
             }
-            Linalg::SvdD([_, k]) => {
+            Linalg::SvdD([a, k]) => {
+                let a = data(a).unwrap_mat();
                 let k = data(k).unwrap_num() as usize;
 
                 AnalysisData::Mat(MatrixData {
                     dim: MatrixDim::new(k, k),
-                    true_value: None,
+                    canonical_value: None,
+                    is_const: a.is_const,
                     diagonal: true,
                     zeroes: 0,
                 })
             }
             Linalg::SvdVt([a, k]) => {
-                let c = data(a).unwrap_mat().dim.cols();
+                let a = data(a).unwrap_mat();
                 let k = data(k).unwrap_num() as usize;
 
                 AnalysisData::Mat(MatrixData {
-                    dim: MatrixDim::new(k, c),
-                    true_value: None,
+                    dim: MatrixDim::new(k, a.dim.cols()),
+                    canonical_value: None,
+                    is_const: a.is_const,
                     diagonal: false,
                     zeroes: 0,
                 })
             }
-            Linalg::Prune([a, k]) => {
+            Linalg::Pruned([a, k]) => {
                 let a = data(a).unwrap_mat();
                 let k = data(k).unwrap_num();
 
+                // TODO:
+
                 AnalysisData::Mat(MatrixData {
                     dim: a.dim,
-                    true_value: None,
+                    canonical_value: None,
+                    is_const: false,
                     diagonal: false,
-                    zeroes: count_pruned_zeroes(a.true_value.clone().unwrap().val, k),
+                    zeroes: 0,
                 })
             }
             Linalg::Relu(a) => {
                 let a = data(a).unwrap_mat();
-
-                let true_value = a.true_value.as_ref().map(|a| {
-                    let res = relu(&a.val);
-                    let (u, sigma, vt) = res.svddc(JobSvd::Some).unwrap();
-                    TrueValue {
-                        val: res.into(),
-                        svd: (u.unwrap().into(), sigma.into(), vt.unwrap().into()),
-                    }
-                });
+                let canonical_value = compute_canonical1(a, relu);
 
                 AnalysisData::Mat(MatrixData {
                     dim: a.dim,
-                    true_value,
+                    canonical_value,
+                    is_const: false,
                     diagonal: a.diagonal,
                     zeroes: 0,
                 })
             }
             Linalg::Softmax(a) => {
                 let a = data(a).unwrap_mat();
-
-                let true_value = a.true_value.as_ref().map(|a| {
-                    let res = softmax(&a.val);
-                    let (u, sigma, vt) = res.svddc(JobSvd::Some).unwrap();
-                    TrueValue {
-                        val: res.into(),
-                        svd: (u.unwrap().into(), sigma.into(), vt.unwrap().into()),
-                    }
-                });
+                let canonical_value = compute_canonical1(a, softmax);
 
                 AnalysisData::Mat(MatrixData {
                     dim: a.dim,
-                    true_value,
+                    canonical_value,
+                    is_const: false,
                     diagonal: false,
                     zeroes: 0,
                 })
@@ -270,7 +274,35 @@ impl Analysis<Linalg> for LinalgAnalysis {
     }
 }
 
-fn count_pruned_zeroes(mat: ArcArray2<f64>, precision: i32) -> usize {
-    let threshold = 10.0f64.powf(precision as f64);
-    mat.iter().filter(|x| **x < threshold).count()
+fn compute_canonical2(
+    a: &MatrixData,
+    b: &MatrixData,
+    op: impl Fn(&ArcArray2<f64>, &ArcArray2<f64>) -> Array2<f64>,
+) -> Option<MatrixValue> {
+    let canonical_value = a
+        .canonical_value
+        .as_ref()
+        .zip(b.canonical_value.as_ref())
+        .map(|(a, b)| {
+            let res = op(&a.val, &b.val);
+            MatrixValue::new(res.into())
+        });
+
+    canonical_value
+}
+
+fn compute_canonical1(
+    a: &MatrixData,
+    op: impl Fn(&ArcArray2<f64>) -> Array2<f64>,
+) -> Option<MatrixValue> {
+    let canonical_value = a.canonical_value.as_ref().map(|a| {
+        let res = op(&a.val);
+        MatrixValue::new(res.into())
+    });
+
+    canonical_value
+}
+
+fn count_zeroes(mat: &ArcArray2<f64>) -> usize {
+    mat.iter().filter(|x| **x == 0.0).count()
 }

@@ -1,11 +1,11 @@
-use std::{cmp::Ordering, collections::HashMap, fmt::Display, rc::Rc};
+use std::{cell::RefCell, cmp::Ordering, collections::HashMap, fmt::Display, rc::Rc};
 
 use egg::*;
 use ndarray::{ArcArray2, Array2, s};
 use ndarray_linalg::Norm;
 
 use crate::{
-    analysis::{LinalgAnalysis, VarInfo},
+    analysis::{LinalgAnalysis, MatrixValue},
     lang::Linalg,
     math::{prune, relu, softmax},
 };
@@ -13,7 +13,7 @@ use crate::{
 #[derive(Debug)]
 pub struct LinalgCost<'a> {
     pub egraph: &'a EGraph<Linalg, LinalgAnalysis>,
-    pub var_info: Rc<HashMap<Symbol, VarInfo>>,
+    pub var_info: Rc<RefCell<HashMap<Symbol, MatrixValue>>>,
     pub max_rel_error: f64,
 }
 
@@ -64,9 +64,9 @@ impl<'a> LinalgCost<'a> {
         eclass
             .data
             .unwrap_mat()
-            .true_value
+            .canonical_value
             .as_ref()
-            .map(|x| (&x.val - approx).norm_l2() / x.val.norm_l2())
+            .map(|x| (x.val() - approx).norm_l2() / x.val().norm_l2())
     }
 
     fn fold_costs(
@@ -104,7 +104,7 @@ impl<'a> CostFunction<Linalg> for LinalgCost<'a> {
                 cost: 0,
                 error: Some(0.0),
                 max_rel_error: self.max_rel_error,
-                val: self.var_info[a].value.clone(),
+                val: self.var_info.borrow()[a].val().clone(),
             },
             Linalg::Num(_) => CostWithErrorBound::default(),
             Linalg::SvdU([a, k]) => {
@@ -113,10 +113,10 @@ impl<'a> CostFunction<Linalg> for LinalgCost<'a> {
 
                 let (u, _, _) = data(a)
                     .unwrap_mat()
-                    .true_value
+                    .canonical_value
                     .as_ref()
                     .expect("a should have a true value")
-                    .svd
+                    .svd()
                     .clone();
 
                 CostWithErrorBound {
@@ -132,10 +132,10 @@ impl<'a> CostFunction<Linalg> for LinalgCost<'a> {
 
                 let (_, sigma, _) = data(a)
                     .unwrap_mat()
-                    .true_value
+                    .canonical_value
                     .as_ref()
                     .expect("a should have a true value")
-                    .svd
+                    .svd()
                     .clone();
 
                 CostWithErrorBound {
@@ -151,10 +151,10 @@ impl<'a> CostFunction<Linalg> for LinalgCost<'a> {
 
                 let (_, _, vt) = data(a)
                     .unwrap_mat()
-                    .true_value
+                    .canonical_value
                     .as_ref()
                     .expect("a should have a true value")
-                    .svd
+                    .svd()
                     .clone();
 
                 CostWithErrorBound {
@@ -164,13 +164,13 @@ impl<'a> CostFunction<Linalg> for LinalgCost<'a> {
                     val: vt.slice_move(s![..k, ..]),
                 }
             }
-            Linalg::Prune([a, k]) => {
+            Linalg::Pruned([a, k]) => {
                 let a_cost = costs(*a);
                 let k = data(k).unwrap_num();
 
-                let res = prune(&a_cost.val, k);
+                // let res = prune(&a_cost.val, k);
 
-                self.fold_costs(enode, res, 0, &[a_cost])
+                self.fold_costs(enode, a_cost.val.clone(), 0, &[a_cost])
             }
             Linalg::Add([a, b]) => {
                 let a_dim = data(a).unwrap_mat().dim;

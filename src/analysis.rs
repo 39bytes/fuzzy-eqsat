@@ -1,94 +1,18 @@
-use anyhow::{Context as _, Error};
 use egg::*;
-use ndarray::{ArcArray1, ArcArray2, Array2};
-use ndarray_linalg::{JobSvd, SVDDC as _};
-use serde::Serialize;
+use ndarray::{ArcArray2, Array2};
 use std::{
-    cell::{OnceCell, RefCell},
+    cell::RefCell,
     collections::{HashMap, HashSet},
-    fmt::Display,
     rc::Rc,
-    str::FromStr,
 };
 
 use crate::{
     lang::Linalg,
     math::{relu, softmax},
+    matrix::{MatrixDim, MatrixValue},
 };
 
 pub const MODEL_INPUT: &str = "x";
-
-#[derive(Debug, Eq, PartialEq, Ord, PartialOrd, Hash, Clone, Copy, Default, Serialize)]
-pub struct MatrixDim(usize, usize);
-
-impl MatrixDim {
-    pub fn new(rows: usize, cols: usize) -> Self {
-        MatrixDim(rows, cols)
-    }
-
-    pub fn rows(&self) -> usize {
-        self.0
-    }
-
-    pub fn cols(&self) -> usize {
-        self.1
-    }
-
-    pub fn size(&self) -> usize {
-        self.rows() * self.cols()
-    }
-}
-
-impl Display for MatrixDim {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}x{}", self.rows(), self.cols())
-    }
-}
-
-impl FromStr for MatrixDim {
-    type Err = Error;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let (rows, cols) = s
-            .split_once("x")
-            .context("Failed to parse matrix dimensions")?;
-
-        Ok(MatrixDim(rows.parse::<usize>()?, cols.parse::<usize>()?))
-    }
-}
-
-type SVD = (ArcArray2<f64>, ArcArray1<f64>, ArcArray2<f64>);
-
-#[derive(Debug, Clone)]
-pub struct MatrixValue {
-    svd: OnceCell<SVD>,
-    val: ArcArray2<f64>,
-}
-
-impl MatrixValue {
-    pub fn new(val: ArcArray2<f64>) -> Self {
-        MatrixValue {
-            val: val.clone(),
-            svd: OnceCell::new(),
-        }
-    }
-
-    pub fn svd(&self) -> &SVD {
-        self.svd.get_or_init(|| {
-            let (u, sigma, vt) = self.val.svddc(JobSvd::Some).unwrap();
-            (u.unwrap().into(), sigma.into(), vt.unwrap().into())
-        })
-    }
-
-    pub fn val(&self) -> &ArcArray2<f64> {
-        &self.val
-    }
-
-    pub fn dim(&self) -> MatrixDim {
-        let (rows, cols) = self.val.dim();
-        MatrixDim::new(rows, cols)
-    }
-}
 
 #[derive(Default, Debug)]
 pub struct LinalgAnalysis {
@@ -101,9 +25,8 @@ pub struct LinalgAnalysis {
 pub struct MatrixData {
     pub dim: MatrixDim,
     pub canonical_value: Option<MatrixValue>,
-    pub is_const: bool,
+    pub const_value: Option<MatrixValue>,
     pub diagonal: bool,
-    pub zeroes: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -132,22 +55,31 @@ impl Analysis<Linalg> for LinalgAnalysis {
     type Data = AnalysisData;
 
     fn merge(&mut self, a: &mut Self::Data, b: Self::Data) -> DidMerge {
-        match (a, b) {
-            (
-                AnalysisData::Mat(MatrixData {
-                    canonical_value: va @ None,
-                    ..
-                }),
-                AnalysisData::Mat(MatrixData {
-                    canonical_value: Some(val),
-                    ..
-                }),
-            ) => {
-                *va = Some(val);
-                DidMerge(true, false)
+        let mut did_merge = DidMerge(false, false);
+        if let (
+            AnalysisData::Mat(MatrixData {
+                canonical_value: canon1,
+                const_value: const1,
+                ..
+            }),
+            AnalysisData::Mat(MatrixData {
+                canonical_value: canon2,
+                const_value: const2,
+                ..
+            }),
+        ) = (a, b)
+        {
+            if canon1.is_none() && canon2.is_some() {
+                *canon1 = canon2;
+                did_merge = DidMerge(true, false);
             }
-            _ => DidMerge(false, false),
+            if const1.is_none() && const2.is_some() {
+                *const1 = const2;
+                did_merge = DidMerge(true, false);
+            }
         }
+
+        did_merge
     }
 
     fn make(egraph: &mut EGraph<Linalg, Self>, enode: &Linalg) -> Self::Data {
@@ -159,14 +91,12 @@ impl Analysis<Linalg> for LinalgAnalysis {
                 let val = var_info
                     .get(a)
                     .unwrap_or_else(|| panic!("Unknown symbol {}", a));
-                let is_const = a.as_str() != MODEL_INPUT;
 
                 AnalysisData::Mat(MatrixData {
                     dim: val.dim(),
                     canonical_value: Some(val.clone()),
-                    is_const,
+                    const_value: (a.as_str() != MODEL_INPUT).then(|| val.clone()),
                     diagonal: false,
-                    zeroes: 0,
                 })
             }
             Linalg::Add([a, b]) => {
@@ -177,9 +107,8 @@ impl Analysis<Linalg> for LinalgAnalysis {
                 AnalysisData::Mat(MatrixData {
                     dim: a.dim,
                     canonical_value,
-                    is_const: false,
+                    const_value: None,
                     diagonal: a.diagonal && b.diagonal,
-                    zeroes: 0,
                 })
             }
             Linalg::Mul([a, b]) => {
@@ -191,9 +120,8 @@ impl Analysis<Linalg> for LinalgAnalysis {
                 AnalysisData::Mat(MatrixData {
                     dim: MatrixDim::new(a.dim.rows(), b.dim.cols()),
                     canonical_value,
-                    is_const: false,
+                    const_value: None,
                     diagonal: a.diagonal && b.diagonal,
-                    zeroes: 0,
                 })
             }
             Linalg::SvdU([a, k]) => {
@@ -203,9 +131,12 @@ impl Analysis<Linalg> for LinalgAnalysis {
                 AnalysisData::Mat(MatrixData {
                     dim: MatrixDim::new(a.dim.rows(), k),
                     canonical_value: None,
-                    is_const: a.is_const,
+                    const_value: None,
+                    // const_value: a
+                    //     .const_value
+                    //     .as_ref()
+                    //     .map(|a| MatrixValue::new(a.svd().0.clone().slice_move(s![.., ..k]))),
                     diagonal: false,
-                    zeroes: 0,
                 })
             }
             Linalg::SvdD([a, k]) => {
@@ -215,9 +146,11 @@ impl Analysis<Linalg> for LinalgAnalysis {
                 AnalysisData::Mat(MatrixData {
                     dim: MatrixDim::new(k, k),
                     canonical_value: None,
-                    is_const: a.is_const,
+                    const_value: None,
+                    // const_value: a.const_value.as_ref().map(|a| {
+                    //     MatrixValue::new(Array2::from_diag(&a.svd().1.slice(s![..k])).into())
+                    // }),
                     diagonal: true,
-                    zeroes: 0,
                 })
             }
             Linalg::SvdVt([a, k]) => {
@@ -227,23 +160,12 @@ impl Analysis<Linalg> for LinalgAnalysis {
                 AnalysisData::Mat(MatrixData {
                     dim: MatrixDim::new(k, a.dim.cols()),
                     canonical_value: None,
-                    is_const: a.is_const,
+                    const_value: None,
+                    // const_value: a
+                    //     .const_value
+                    //     .as_ref()
+                    //     .map(|a| MatrixValue::new(a.svd().2.clone().slice_move(s![..k, ..]))),
                     diagonal: false,
-                    zeroes: 0,
-                })
-            }
-            Linalg::Pruned([a, k]) => {
-                let a = data(a).unwrap_mat();
-                let k = data(k).unwrap_num();
-
-                // TODO:
-
-                AnalysisData::Mat(MatrixData {
-                    dim: a.dim,
-                    canonical_value: None,
-                    is_const: false,
-                    diagonal: false,
-                    zeroes: 0,
                 })
             }
             Linalg::Relu(a) => {
@@ -253,9 +175,8 @@ impl Analysis<Linalg> for LinalgAnalysis {
                 AnalysisData::Mat(MatrixData {
                     dim: a.dim,
                     canonical_value,
-                    is_const: false,
+                    const_value: None,
                     diagonal: a.diagonal,
-                    zeroes: 0,
                 })
             }
             Linalg::Softmax(a) => {
@@ -265,9 +186,8 @@ impl Analysis<Linalg> for LinalgAnalysis {
                 AnalysisData::Mat(MatrixData {
                     dim: a.dim,
                     canonical_value,
-                    is_const: false,
+                    const_value: None,
                     diagonal: false,
-                    zeroes: 0,
                 })
             }
         }
@@ -279,30 +199,21 @@ fn compute_canonical2(
     b: &MatrixData,
     op: impl Fn(&ArcArray2<f64>, &ArcArray2<f64>) -> Array2<f64>,
 ) -> Option<MatrixValue> {
-    let canonical_value = a
-        .canonical_value
+    a.canonical_value
         .as_ref()
         .zip(b.canonical_value.as_ref())
         .map(|(a, b)| {
-            let res = op(&a.val, &b.val);
+            let res = op(a.val(), b.val());
             MatrixValue::new(res.into())
-        });
-
-    canonical_value
+        })
 }
 
 fn compute_canonical1(
     a: &MatrixData,
     op: impl Fn(&ArcArray2<f64>) -> Array2<f64>,
 ) -> Option<MatrixValue> {
-    let canonical_value = a.canonical_value.as_ref().map(|a| {
-        let res = op(&a.val);
+    a.canonical_value.as_ref().map(|a| {
+        let res = op(a.val());
         MatrixValue::new(res.into())
-    });
-
-    canonical_value
-}
-
-fn count_zeroes(mat: &ArcArray2<f64>) -> usize {
-    mat.iter().filter(|x| **x == 0.0).count()
+    })
 }

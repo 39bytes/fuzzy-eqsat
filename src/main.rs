@@ -1,20 +1,20 @@
 use anyhow::Result;
 use log::{debug, info};
 use ndarray::Array2;
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use analysis::LinalgAnalysis;
 use egg::*;
-use ndarray_linalg::*;
 use std::time::Instant;
 
-use crate::analysis::{AnalysisData, MODEL_INPUT, MatrixData, MatrixValue};
+use crate::analysis::{AnalysisData, MODEL_INPUT, MatrixData};
 use crate::cost::LinalgCost;
 use crate::extract::CompleteExtractor;
 use crate::lang::Linalg;
 use crate::math::prune;
+use crate::matrix::MatrixValue;
 use crate::model::{ModelLayer, load_model, load_test_set, output_python_file};
 
 mod analysis;
@@ -22,6 +22,7 @@ mod cost;
 mod extract;
 mod lang;
 mod math;
+mod matrix;
 mod model;
 mod util;
 
@@ -85,7 +86,7 @@ impl Applier<Linalg, LinalgAnalysis> for SvdApplier {
             _ => return vec![],
         };
 
-        let step = (rank.ilog2() - 2) as i32;
+        let step = ((rank.ilog2() - 2) * 2) as i32;
         let mut changed = vec![];
         let mut k: i32 = rank as i32 - step;
 
@@ -112,29 +113,7 @@ impl Applier<Linalg, LinalgAnalysis> for SvdApplier {
 
 struct PruneApplier {
     a: Var,
-    // pruned_nodes: RefCell<HashMap<Symbol, VarInfo>>,
 }
-
-// fn make_pruned_vars(&mut ) {
-//     return
-// }
-
-// fn prunable(var: &'static str) -> impl Fn(&mut EGraph<Linalg, LinalgAnalysis>, Id, &Subst) -> bool {
-//     let var: Var = var.parse().unwrap();
-//
-//     move |egraph, _, subst| {
-//         let eclass = &egraph[subst[var]];
-//         match eclass.data {
-//             AnalysisData::Mat(_) => {}
-//             _ => return false,
-//         };
-//
-//         !eclass
-//             .nodes
-//             .iter()
-//             .any(|node| matches!(node, Linalg::Prune(_)))
-//     }
-// }
 
 impl Applier<Linalg, LinalgAnalysis> for PruneApplier {
     fn apply_one(
@@ -153,35 +132,33 @@ impl Applier<Linalg, LinalgAnalysis> for PruneApplier {
 
         // only prune const eclasses (that we can know at compile time)
         // (e.g weights/biases or their svd)
-        let data = match &egraph[eclass].data {
-            AnalysisData::Mat(data) if data.is_const => data.clone(),
+        let const_value = match &egraph[eclass].data {
+            AnalysisData::Mat(MatrixData {
+                const_value: Some(val),
+                ..
+            }) => val.clone(),
             _ => return vec![],
         };
 
         let mut changed = vec![];
 
-        for precision in -6..-2 {
-            let precision_node = egraph.add(Linalg::Num(precision));
-
+        for precision in -2..0 {
             let sym = Symbol::from(format!(
                 "pruned-{} ({})",
                 egraph.analysis.prune_count, precision
             ));
-            // TODO:
-            // let pruned_val = prune(&data., precision);
-            // egraph
-            //     .analysis
-            //     .var_info
-            //     .borrow_mut()
-            //     .insert(sym, MatrixValue::new(pruned_val));
+            let pruned_val = prune(const_value.val(), precision);
+            egraph
+                .analysis
+                .var_info
+                .borrow_mut()
+                .insert(sym, MatrixValue::new(pruned_val));
             let pruned_mat = egraph.add(Linalg::Mat(sym));
-
-            let prune_node = egraph.add(Linalg::Pruned([pruned_mat, precision_node]));
 
             egraph.analysis.pruned_eclasses.insert(pruned_mat);
 
-            if egraph.union(eclass, prune_node) {
-                changed.push(prune_node);
+            if egraph.union(eclass, pruned_mat) {
+                changed.push(pruned_mat);
             }
         }
         egraph.analysis.prune_count += 1;
@@ -194,17 +171,17 @@ impl Applier<Linalg, LinalgAnalysis> for PruneApplier {
 fn make_rules() -> Vec<Rewrite<Linalg, LinalgAnalysis>> {
     let mut rules: Vec<Rewrite<Linalg, LinalgAnalysis>> = vec![];
     // rules.extend(rewrite!("matmul-assoc"; "(* (* ?a ?b) ?c)" <=> "(* ?a (* ?b ?c))"));
-    rules.push(rewrite!("svd-mul"; "(* ?a ?b)" => {
-        SvdApplier {
-            a: "?a".parse().unwrap(),
-            b: "?b".parse().unwrap(),
-        }
-    }));
-    // rules.push(rewrite!("prune"; "?a" => {
-    //     PruneApplier {
-    //         a: "?a".parse().unwrap()
+    // rules.push(rewrite!("svd-mul"; "(* ?a ?b)" => {
+    //     SvdApplier {
+    //         a: "?a".parse().unwrap(),
+    //         b: "?b".parse().unwrap(),
     //     }
     // }));
+    rules.push(rewrite!("prune"; "?a" => {
+        PruneApplier {
+            a: "?a".parse().unwrap()
+        }
+    }));
 
     rules
 }

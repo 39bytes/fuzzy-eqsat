@@ -5,9 +5,10 @@ use ndarray::{ArcArray2, Array2, s};
 use ndarray_linalg::Norm;
 
 use crate::{
-    analysis::{LinalgAnalysis, MatrixValue},
+    analysis::LinalgAnalysis,
     lang::Linalg,
-    math::{prune, relu, softmax},
+    math::{relu, softmax},
+    matrix::MatrixValue,
 };
 
 #[derive(Debug)]
@@ -164,14 +165,6 @@ impl<'a> CostFunction<Linalg> for LinalgCost<'a> {
                     val: vt.slice_move(s![..k, ..]),
                 }
             }
-            Linalg::Pruned([a, k]) => {
-                let a_cost = costs(*a);
-                let k = data(k).unwrap_num();
-
-                // let res = prune(&a_cost.val, k);
-
-                self.fold_costs(enode, a_cost.val.clone(), 0, &[a_cost])
-            }
             Linalg::Add([a, b]) => {
                 let a_dim = data(a).unwrap_mat().dim;
                 let a_cost = costs(*a);
@@ -208,9 +201,10 @@ impl<'a> CostFunction<Linalg> for LinalgCost<'a> {
                 let a_cost = costs(*a);
                 let b_cost = costs(*b);
                 let op_cost = if data(a).unwrap_mat().diagonal {
-                    a_dim.cols() * b_dim.cols()
+                    b_dim.cols() * b_dim.cols()
                 } else {
-                    a_dim.rows() * a_dim.cols() * b_dim.cols()
+                    let zeroes = count_zeroes(&a_cost.val);
+                    (a_dim.rows() * a_dim.cols() - zeroes) * b_dim.cols()
                 };
 
                 let res = a_cost.val.dot(&b_cost.val).to_shared();
@@ -219,4 +213,8 @@ impl<'a> CostFunction<Linalg> for LinalgCost<'a> {
             }
         }
     }
+}
+
+fn count_zeroes(mat: &ArcArray2<f64>) -> usize {
+    mat.iter().filter(|x| **x < f64::EPSILON).count()
 }

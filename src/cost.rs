@@ -201,7 +201,7 @@ impl<'a> CostFunction<Linalg> for LinalgCost<'a> {
                 let a_cost = costs(*a);
                 let b_cost = costs(*b);
                 let op_cost = if data(a).unwrap_mat().diagonal {
-                    b_dim.cols() * b_dim.cols()
+                    b_dim.rows() * b_dim.cols()
                 } else {
                     let zeroes = count_zeroes(&a_cost.val);
                     (a_dim.rows() * a_dim.cols() - zeroes) * b_dim.cols()
@@ -216,5 +216,5 @@ impl<'a> CostFunction<Linalg> for LinalgCost<'a> {
 }
 
 fn count_zeroes(mat: &ArcArray2<f64>) -> usize {
-    mat.iter().filter(|x| **x < f64::EPSILON).count()
+    mat.iter().filter(|x| x.abs() < f64::EPSILON).count()
 }

@@ -1,5 +1,5 @@
 use egg::*;
-use ndarray::{ArcArray2, Array2};
+use ndarray::{ArcArray2, Array2, s};
 use std::{
     cell::RefCell,
     collections::{HashMap, HashSet},
@@ -131,11 +131,11 @@ impl Analysis<Linalg> for LinalgAnalysis {
                 AnalysisData::Mat(MatrixData {
                     dim: MatrixDim::new(a.dim.rows(), k),
                     canonical_value: None,
-                    const_value: None,
-                    // const_value: a
-                    //     .const_value
-                    //     .as_ref()
-                    //     .map(|a| MatrixValue::new(a.svd().0.clone().slice_move(s![.., ..k]))),
+                    // const_value: None,
+                    const_value: a
+                        .const_value
+                        .as_ref()
+                        .map(|a| MatrixValue::new(a.svd().0.clone().slice_move(s![.., ..k]))),
                     diagonal: false,
                 })
             }
@@ -146,10 +146,10 @@ impl Analysis<Linalg> for LinalgAnalysis {
                 AnalysisData::Mat(MatrixData {
                     dim: MatrixDim::new(k, k),
                     canonical_value: None,
-                    const_value: None,
-                    // const_value: a.const_value.as_ref().map(|a| {
-                    //     MatrixValue::new(Array2::from_diag(&a.svd().1.slice(s![..k])).into())
-                    // }),
+                    // const_value: None,
+                    const_value: a.const_value.as_ref().map(|a| {
+                        MatrixValue::new(Array2::from_diag(&a.svd().1.slice(s![..k])).into())
+                    }),
                     diagonal: true,
                 })
             }
@@ -160,11 +160,11 @@ impl Analysis<Linalg> for LinalgAnalysis {
                 AnalysisData::Mat(MatrixData {
                     dim: MatrixDim::new(k, a.dim.cols()),
                     canonical_value: None,
-                    const_value: None,
-                    // const_value: a
-                    //     .const_value
-                    //     .as_ref()
-                    //     .map(|a| MatrixValue::new(a.svd().2.clone().slice_move(s![..k, ..]))),
+                    // const_value: None,
+                    const_value: a
+                        .const_value
+                        .as_ref()
+                        .map(|a| MatrixValue::new(a.svd().2.clone().slice_move(s![..k, ..]))),
                     diagonal: false,
                 })
             }

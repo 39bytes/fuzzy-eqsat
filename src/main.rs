@@ -16,6 +16,7 @@ use crate::lang::Linalg;
 use crate::math::prune;
 use crate::matrix::MatrixValue;
 use crate::model::{ModelLayer, load_model, load_test_set, output_python_file};
+use crate::plot::output_pareto;
 
 mod analysis;
 mod cost;
@@ -24,6 +25,7 @@ mod lang;
 mod math;
 mod matrix;
 mod model;
+mod plot;
 mod util;
 
 fn make_expr(
@@ -77,6 +79,13 @@ impl Applier<Linalg, LinalgAnalysis> for SvdApplier {
     ) -> Vec<Id> {
         let a = subst[self.a];
         let b = subst[self.b];
+        if egraph[a]
+            .nodes
+            .iter()
+            .any(|n| matches!(n, Linalg::SvdU(_) | Linalg::SvdD(_) | Linalg::SvdVt(_)))
+        {
+            return vec![];
+        }
         let rank = match &egraph[a].data {
             AnalysisData::Mat(MatrixData {
                 canonical_value: Some(val),
@@ -86,7 +95,8 @@ impl Applier<Linalg, LinalgAnalysis> for SvdApplier {
             _ => return vec![],
         };
 
-        let step = ((rank.ilog2() - 2) * 2) as i32;
+        // let step = (rank.ilog2() - 2) as i32;
+        let step = 20;
         let mut changed = vec![];
         let mut k: i32 = rank as i32 - step;
 
@@ -142,7 +152,7 @@ impl Applier<Linalg, LinalgAnalysis> for PruneApplier {
 
         let mut changed = vec![];
 
-        for precision in -2..0 {
+        for precision in -5..-4 {
             let sym = Symbol::from(format!(
                 "pruned-{} ({})",
                 egraph.analysis.prune_count, precision
@@ -171,12 +181,12 @@ impl Applier<Linalg, LinalgAnalysis> for PruneApplier {
 fn make_rules() -> Vec<Rewrite<Linalg, LinalgAnalysis>> {
     let mut rules: Vec<Rewrite<Linalg, LinalgAnalysis>> = vec![];
     // rules.extend(rewrite!("matmul-assoc"; "(* (* ?a ?b) ?c)" <=> "(* ?a (* ?b ?c))"));
-    // rules.push(rewrite!("svd-mul"; "(* ?a ?b)" => {
-    //     SvdApplier {
-    //         a: "?a".parse().unwrap(),
-    //         b: "?b".parse().unwrap(),
-    //     }
-    // }));
+    rules.push(rewrite!("svd-mul"; "(* ?a ?b)" => {
+        SvdApplier {
+            a: "?a".parse().unwrap(),
+            b: "?b".parse().unwrap(),
+        }
+    }));
     rules.push(rewrite!("prune"; "?a" => {
         PruneApplier {
             a: "?a".parse().unwrap()
@@ -245,6 +255,15 @@ fn optimize(
         best.cost.error.unwrap()
     );
 
+    let pts: Vec<_> = extractor
+        .all_costs(runner.roots[0])
+        .iter()
+        .map(|c| (c.cost.error.unwrap(), c.cost.cost as f64))
+        .collect();
+
+    output_pareto("pareto.svg", &pts)?;
+    println!("Output plot to pareto.svg");
+
     let before = Instant::now();
     output_python_file(best, &best_expr, &runner.egraph, &var_info, "out.py")?;
     println!("Outputting python took: {}ms", before.elapsed().as_millis());
@@ -256,7 +275,7 @@ fn main() -> Result<()> {
     env_logger::init();
 
     let (var_info, expr) = model_to_egg("mnist_model_params.json", "test_set.json")?;
-    optimize(expr, var_info, 0.01)?;
+    optimize(expr, var_info, 0.02)?;
 
     Ok(())
 }

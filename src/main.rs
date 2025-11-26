@@ -11,7 +11,7 @@ use std::time::Instant;
 
 use crate::analysis::{AnalysisData, MODEL_INPUT, MatrixData};
 use crate::cost::LinalgCost;
-use crate::extract::CompleteExtractor;
+use crate::extract::{CompleteExtractor, GeneticAlgorithmExtractor};
 use crate::lang::Linalg;
 use crate::math::prune;
 use crate::matrix::MatrixValue;
@@ -100,7 +100,8 @@ impl Applier<Linalg, LinalgAnalysis> for SvdApplier {
         let mut changed = vec![];
         let mut k: i32 = rank as i32 - step;
 
-        while k > 0 {
+        // while k > 0 {
+        if k > 0 {
             let k_node = egraph.add(Linalg::Num(k));
             let u_node = egraph.add(Linalg::SvdU([a, k_node]));
             let d_node = egraph.add(Linalg::SvdD([a, k_node]));
@@ -113,9 +114,10 @@ impl Applier<Linalg, LinalgAnalysis> for SvdApplier {
             if egraph.union(eclass, udvtb) {
                 changed.push(udvtb);
             }
-
-            k -= step;
         }
+
+        //     k -= step;
+        // }
 
         changed
     }
@@ -180,7 +182,7 @@ impl Applier<Linalg, LinalgAnalysis> for PruneApplier {
 
 fn make_rules() -> Vec<Rewrite<Linalg, LinalgAnalysis>> {
     let mut rules: Vec<Rewrite<Linalg, LinalgAnalysis>> = vec![];
-    // rules.extend(rewrite!("matmul-assoc"; "(* (* ?a ?b) ?c)" <=> "(* ?a (* ?b ?c))"));
+    rules.extend(rewrite!("matmul-assoc"; "(* (* ?a ?b) ?c)" <=> "(* ?a (* ?b ?c))"));
     rules.push(rewrite!("svd-mul"; "(* ?a ?b)" => {
         SvdApplier {
             a: "?a".parse().unwrap(),
@@ -237,7 +239,7 @@ fn optimize(
 
     let before = Instant::now();
     info!("Extracting");
-    let extractor = CompleteExtractor::new(
+    let mut extractor = GeneticAlgorithmExtractor::new(
         &runner.egraph,
         LinalgCost {
             egraph: &runner.egraph,
@@ -245,28 +247,33 @@ fn optimize(
             max_rel_error,
         },
     );
-    println!("Extraction took: {}ms", before.elapsed().as_millis());
-
     let (best, best_expr) = extractor.find_best(runner.roots[0]);
+    // let extractor = CompleteExtractor::new(
+    //     &runner.egraph,
+    //     LinalgCost {
+    //         egraph: &runner.egraph,
+    //         var_info: var_info.clone(),
+    //         max_rel_error,
+    //     },
+    // );
+    println!("Extraction took: {}ms", before.elapsed().as_millis());
+    //
+    // let (best, best_expr) = extractor.find_best(runner.roots[0]);
     println!("Best: {}", best_expr);
-    println!(
-        "Cost: {}, Error: {}",
-        best.cost.cost,
-        best.cost.error.unwrap()
-    );
+    println!("Cost: {}, Error: {}", best.cost, best.error.unwrap());
 
-    let pts: Vec<_> = extractor
-        .all_costs(runner.roots[0])
-        .iter()
-        .map(|c| (c.cost.error.unwrap(), c.cost.cost as f64))
-        .collect();
+    // let pts: Vec<_> = extractor
+    //     .all_costs(runner.roots[0])
+    //     .iter()
+    //     .map(|c| (c.cost.error.unwrap(), c.cost.cost as f64))
+    //     .collect();
 
-    output_pareto("pareto.svg", &pts)?;
-    println!("Output plot to pareto.svg");
+    // output_pareto("pareto.svg", &pts)?;
+    // println!("Output plot to pareto.svg");
 
-    let before = Instant::now();
-    output_python_file(best, &best_expr, &runner.egraph, &var_info, "out.py")?;
-    println!("Outputting python took: {}ms", before.elapsed().as_millis());
+    // let before = Instant::now();
+    // output_python_file(best, &best_expr, &runner.egraph, &var_info, "out.py")?;
+    // println!("Outputting python took: {}ms", before.elapsed().as_millis());
 
     Ok(())
 }

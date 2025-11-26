@@ -277,6 +277,7 @@ where
     fn evaluate_sol(&mut self, root: Id, sol: &HashMap<Id, usize>) -> (CF::Cost, RecExpr<L>) {
         let mut costs: HashMap<Id, CF::Cost> = HashMap::new();
 
+        // TODO: optimize this? (toposort maybe?)
         let mut did_something = true;
         while did_something {
             did_something = false;
@@ -297,6 +298,7 @@ where
             }
         }
 
+        // TODO: avoid unnecessary building of recexpr every time?
         let root_node = self.egraph[root].nodes[sol[&root]].clone();
         let recexpr = root_node.build_recexpr(|id| self.egraph[id].nodes[sol[&id]].clone());
         (costs[&root].clone(), recexpr)

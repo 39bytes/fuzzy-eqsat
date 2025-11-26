@@ -224,12 +224,13 @@ where
         }
     }
 
-    pub fn find_best(&mut self, root: Id) -> (CF::Cost, RecExpr<L>) {
+    pub fn find_best(&mut self, root: Id, orig: RecExpr<L>) -> (CF::Cost, RecExpr<L>) {
         let selection_cutoff =
             ((Self::POPULATION_SIZE as f64) * Self::SELECTION_COUNT).round() as usize;
         let mut generation = 0;
 
-        let mut best: Option<(HashMap<Id, usize>, CF::Cost)> = None;
+        let mut best_cost = self.cost_function.cost_rec(&orig);
+        let mut best_expr = orig;
 
         let mut population: Vec<_> = (0..Self::POPULATION_SIZE)
             .map(|_| self.random_sol())
@@ -243,23 +244,11 @@ where
                 .collect();
 
             // TODO: Optimize using heap
-            population_with_costs.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
+            population_with_costs.sort_by(|a, b| a.1.0.partial_cmp(&b.1.0).unwrap());
 
-            match best {
-                None => {
-                    best = Some((
-                        population[population_with_costs[0].0].clone(),
-                        population_with_costs[0].1.clone(),
-                    ))
-                }
-                Some(ref mut existing) => {
-                    if population_with_costs[0].1 < existing.1 {
-                        *existing = (
-                            population[population_with_costs[0].0].clone(),
-                            population_with_costs[0].1.clone(),
-                        )
-                    }
-                }
+            if population_with_costs[0].1.0 < best_cost {
+                best_expr = population_with_costs[0].1.1.clone();
+                best_cost = population_with_costs[0].1.0.clone();
             }
 
             let fittest: Vec<_> = population_with_costs[..selection_cutoff]
@@ -282,14 +271,10 @@ where
             generation += 1;
         }
 
-        let (best_sol, best_cost) = best.expect("There should be a best solution");
-        let root_node = self.egraph[root].nodes[best_sol[&root]].clone();
-        let best_expr = root_node.build_recexpr(|id| self.egraph[id].nodes[best_sol[&id]].clone());
-
         (best_cost, best_expr)
     }
 
-    fn evaluate_sol(&mut self, root: Id, sol: &HashMap<Id, usize>) -> CF::Cost {
+    fn evaluate_sol(&mut self, root: Id, sol: &HashMap<Id, usize>) -> (CF::Cost, RecExpr<L>) {
         let mut costs: HashMap<Id, CF::Cost> = HashMap::new();
 
         let mut did_something = true;
@@ -312,7 +297,9 @@ where
             }
         }
 
-        costs[&root].clone()
+        let root_node = self.egraph[root].nodes[sol[&root]].clone();
+        let recexpr = root_node.build_recexpr(|id| self.egraph[id].nodes[sol[&id]].clone());
+        (costs[&root].clone(), recexpr)
     }
 
     fn crossover(

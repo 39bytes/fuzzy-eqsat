@@ -187,11 +187,11 @@ fn make_rules() -> Vec<Rewrite<Linalg, LinalgAnalysis>> {
             b: "?b".parse().unwrap(),
         }
     }));
-    rules.push(rewrite!("prune"; "?a" => {
-        PruneApplier {
-            a: "?a".parse().unwrap()
-        }
-    }));
+    // rules.push(rewrite!("prune"; "?a" => {
+    //     PruneApplier {
+    //         a: "?a".parse().unwrap()
+    //     }
+    // }));
 
     rules
 }
@@ -245,7 +245,7 @@ fn optimize(
             max_rel_error,
         },
     );
-    let (best, best_expr) = extractor.find_best(runner.roots[0]);
+    let (best, best_expr) = extractor.find_best(runner.roots[0], expr);
     // let extractor = CompleteExtractor::new(
     //     &runner.egraph,
     //     LinalgCost {

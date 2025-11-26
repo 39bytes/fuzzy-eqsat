@@ -1,1 +1,6 @@
 /target
+*.py
+*.json
+*.png
+*.svg
+*.dot

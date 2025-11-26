@@ -4,7 +4,6 @@ use rand_distr::{Bernoulli, Distribution};
 use std::{
     cmp::Ordering,
     collections::{HashMap, HashSet},
-    time::{Duration, Instant},
 };
 
 use egg::*;
@@ -189,7 +188,7 @@ fn next_permutation(
 pub struct GeneticAlgorithmExtractor<'a, CF: CostFunction<L>, L: Language, N: Analysis<L>> {
     cost_function: CF,
     egraph: &'a EGraph<L, N>,
-    eclass_bounds: Vec<usize>,
+    eclass_bounds: HashMap<Id, usize>,
     rng: ThreadRng,
     mutation: Bernoulli,
 }
@@ -200,16 +199,21 @@ where
     L: Language,
     N: Analysis<L>,
 {
-    const POPULATION_SIZE: usize = 100;
+    const POPULATION_SIZE: usize = 50;
     const MAX_GENERATIONS: usize = 10;
     const SELECTION_COUNT: f64 = 0.20;
     const MUTATION_RATE: f64 = 0.05;
 
     pub fn new(egraph: &'a EGraph<L, N>, cost_function: CF) -> Self {
-        let num_eclasses = egraph.classes().count();
-        let eclass_bounds = (0..num_eclasses)
-            .map(|i| egraph[i.into()].nodes.len())
+        let eclass_bounds = egraph
+            .classes()
+            .map(|c| (c.id, egraph[c.id].nodes.len()))
             .collect();
+
+        println!(
+            "eclass IDs: {:?}",
+            egraph.classes().map(|c| c.id).collect::<Vec<_>>()
+        );
 
         GeneticAlgorithmExtractor {
             egraph,
@@ -225,7 +229,7 @@ where
             ((Self::POPULATION_SIZE as f64) * Self::SELECTION_COUNT).round() as usize;
         let mut generation = 0;
 
-        let mut best: Option<(Vec<usize>, CF::Cost)> = None;
+        let mut best: Option<(HashMap<Id, usize>, CF::Cost)> = None;
 
         let mut population: Vec<_> = (0..Self::POPULATION_SIZE)
             .map(|_| self.random_sol())
@@ -279,30 +283,25 @@ where
         }
 
         let (best_sol, best_cost) = best.expect("There should be a best solution");
-        let root_node = self.egraph[root].nodes[best_sol[usize::from(root)]].clone();
-        let best_expr =
-            root_node.build_recexpr(|id| self.egraph[id].nodes[best_sol[usize::from(id)]].clone());
+        let root_node = self.egraph[root].nodes[best_sol[&root]].clone();
+        let best_expr = root_node.build_recexpr(|id| self.egraph[id].nodes[best_sol[&id]].clone());
 
         (best_cost, best_expr)
     }
 
-    fn evaluate_sol(&mut self, root: Id, sol: &[usize]) -> CF::Cost {
+    fn evaluate_sol(&mut self, root: Id, sol: &HashMap<Id, usize>) -> CF::Cost {
         let mut costs: HashMap<Id, CF::Cost> = HashMap::new();
 
         let mut did_something = true;
         while did_something {
             did_something = false;
 
-            let mut ids = self.egraph.classes().map(|c| c.id).collect::<Vec<_>>();
-            ids.sort();
-            println!("{:?}", ids);
-
             for class in self.egraph.classes() {
                 let id = class.id;
                 if costs.contains_key(&id) {
                     continue;
                 }
-                let enode = &self.egraph[id].nodes[sol[usize::from(id)]];
+                let enode = &class.nodes[sol[&id]];
                 if !enode.all(|id| costs.contains_key(&self.egraph.find(id))) {
                     continue;
                 }
@@ -316,30 +315,41 @@ where
         costs[&root].clone()
     }
 
-    fn crossover(&mut self, a: &[usize], b: &[usize]) -> (Vec<usize>, Vec<usize>) {
+    fn crossover(
+        &mut self,
+        a: &HashMap<Id, usize>,
+        b: &HashMap<Id, usize>,
+    ) -> (HashMap<Id, usize>, HashMap<Id, usize>) {
         assert!(a.len() == b.len());
-        let crossover_point = self.rng.random_range(0..a.len());
-        let mut child1 = Vec::from(a);
-        let mut child2 = Vec::from(b);
+        let a_vec: Vec<_> = a.iter().collect();
+        let b_vec: Vec<_> = b.iter().collect();
+
+        let crossover_point = self.rng.random_range(0..a_vec.len());
+        let mut child1 = a_vec;
+        let mut child2 = b_vec;
+        child1.sort_by_key(|c| c.0);
+        child2.sort_by_key(|c| c.0);
 
         child1[crossover_point..].swap_with_slice(&mut child2[crossover_point..]);
 
-        (child1, child2)
+        (
+            child1.into_iter().map(|(k, v)| (*k, *v)).collect(),
+            child2.into_iter().map(|(k, v)| (*k, *v)).collect(),
+        )
     }
 
-    fn mutate(&mut self, sol: &mut [usize]) {
-        for (i, x) in sol.iter_mut().enumerate() {
+    fn mutate(&mut self, sol: &mut HashMap<Id, usize>) {
+        for (i, x) in sol.iter_mut() {
             if self.mutation.sample(&mut self.rng) {
                 *x = self.rng.random_range(0..self.eclass_bounds[i]);
             }
         }
     }
 
-    fn random_sol(&mut self) -> Vec<usize> {
+    fn random_sol(&mut self) -> HashMap<Id, usize> {
         self.eclass_bounds
             .iter()
-            .copied()
-            .map(|x| self.rng.random_range(0..x))
+            .map(|(id, bound)| (*id, self.rng.random_range(0..*bound)))
             .collect()
     }
 }

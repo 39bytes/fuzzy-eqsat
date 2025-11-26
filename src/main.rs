@@ -100,8 +100,7 @@ impl Applier<Linalg, LinalgAnalysis> for SvdApplier {
         let mut changed = vec![];
         let mut k: i32 = rank as i32 - step;
 
-        // while k > 0 {
-        if k > 0 {
+        while k > 0 {
             let k_node = egraph.add(Linalg::Num(k));
             let u_node = egraph.add(Linalg::SvdU([a, k_node]));
             let d_node = egraph.add(Linalg::SvdD([a, k_node]));
@@ -114,10 +113,9 @@ impl Applier<Linalg, LinalgAnalysis> for SvdApplier {
             if egraph.union(eclass, udvtb) {
                 changed.push(udvtb);
             }
-        }
 
-        //     k -= step;
-        // }
+            k -= step;
+        }
 
         changed
     }
@@ -182,7 +180,7 @@ impl Applier<Linalg, LinalgAnalysis> for PruneApplier {
 
 fn make_rules() -> Vec<Rewrite<Linalg, LinalgAnalysis>> {
     let mut rules: Vec<Rewrite<Linalg, LinalgAnalysis>> = vec![];
-    rules.extend(rewrite!("matmul-assoc"; "(* (* ?a ?b) ?c)" <=> "(* ?a (* ?b ?c))"));
+    // rules.extend(rewrite!("matmul-assoc"; "(* (* ?a ?b) ?c)" <=> "(* ?a (* ?b ?c))"));
     rules.push(rewrite!("svd-mul"; "(* ?a ?b)" => {
         SvdApplier {
             a: "?a".parse().unwrap(),

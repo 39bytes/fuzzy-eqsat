@@ -11,7 +11,7 @@ use std::time::Instant;
 
 use crate::analysis::{AnalysisData, MODEL_INPUT, MatrixData};
 use crate::cost::LinalgCost;
-use crate::extract::{CompleteExtractor, GeneticAlgorithmExtractor};
+use crate::extract::{CompleteExtractor, GeneticAlgorithmExtractor, SimulatedAnnealingExtractor};
 use crate::lang::Linalg;
 use crate::math::prune;
 use crate::matrix::MatrixValue;
@@ -180,18 +180,18 @@ impl Applier<Linalg, LinalgAnalysis> for PruneApplier {
 
 fn make_rules() -> Vec<Rewrite<Linalg, LinalgAnalysis>> {
     let mut rules: Vec<Rewrite<Linalg, LinalgAnalysis>> = vec![];
-    // rules.extend(rewrite!("matmul-assoc"; "(* (* ?a ?b) ?c)" <=> "(* ?a (* ?b ?c))"));
+    rules.extend(rewrite!("matmul-assoc"; "(* (* ?a ?b) ?c)" <=> "(* ?a (* ?b ?c))"));
     rules.push(rewrite!("svd-mul"; "(* ?a ?b)" => {
         SvdApplier {
             a: "?a".parse().unwrap(),
             b: "?b".parse().unwrap(),
         }
     }));
-    // rules.push(rewrite!("prune"; "?a" => {
-    //     PruneApplier {
-    //         a: "?a".parse().unwrap()
-    //     }
-    // }));
+    rules.push(rewrite!("prune"; "?a" => {
+        PruneApplier {
+            a: "?a".parse().unwrap()
+        }
+    }));
 
     rules
 }
@@ -246,17 +246,8 @@ fn optimize(
         },
     );
     let (best, best_expr) = extractor.find_best(runner.roots[0], expr);
-    // let extractor = CompleteExtractor::new(
-    //     &runner.egraph,
-    //     LinalgCost {
-    //         egraph: &runner.egraph,
-    //         var_info: var_info.clone(),
-    //         max_rel_error,
-    //     },
-    // );
     println!("Extraction took: {}ms", before.elapsed().as_millis());
     //
-    // let (best, best_expr) = extractor.find_best(runner.roots[0]);
     println!("Best: {}", best_expr);
     println!("Cost: {}, Error: {}", best.cost, best.error.unwrap());
 

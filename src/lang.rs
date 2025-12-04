@@ -8,6 +8,7 @@ define_language! {
         "svd_d" = SvdD([Id; 2]),
         "svd_vt" = SvdVt([Id; 2]),
         "relu" = Relu(Id),
+        "tanh" = Tanh(Id),
         "softmax" = Softmax(Id),
         Num(i32),
         Mat(Symbol),

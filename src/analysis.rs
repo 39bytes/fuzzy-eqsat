@@ -8,7 +8,7 @@ use std::{
 
 use crate::{
     lang::Linalg,
-    math::{relu, softmax},
+    math::{relu, softmax, tanh},
     matrix::{MatrixDim, MatrixValue},
 };
 
@@ -182,6 +182,17 @@ impl Analysis<Linalg> for LinalgAnalysis {
             Linalg::Softmax(a) => {
                 let a = data(a).unwrap_mat();
                 let canonical_value = compute_canonical1(a, softmax);
+
+                AnalysisData::Mat(MatrixData {
+                    dim: a.dim,
+                    canonical_value,
+                    const_value: None,
+                    diagonal: false,
+                })
+            }
+            Linalg::Tanh(a) => {
+                let a = data(a).unwrap_mat();
+                let canonical_value = compute_canonical1(a, tanh);
 
                 AnalysisData::Mat(MatrixData {
                     dim: a.dim,

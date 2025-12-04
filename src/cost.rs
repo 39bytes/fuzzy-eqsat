@@ -7,7 +7,7 @@ use ndarray_linalg::Norm;
 use crate::{
     analysis::LinalgAnalysis,
     lang::Linalg,
-    math::{relu, softmax},
+    math::{relu, softmax, tanh},
     matrix::MatrixValue,
 };
 
@@ -191,6 +191,15 @@ impl<'a> CostFunction<Linalg> for LinalgCost<'a> {
                 let op_cost = a_dim.size();
 
                 let res = softmax(&a_cost.val).to_shared();
+
+                self.fold_costs(enode, res, op_cost, &[a_cost])
+            }
+            Linalg::Tanh(a) => {
+                let a_dim = data(a).unwrap_mat().dim;
+                let a_cost = costs(*a);
+                let op_cost = a_dim.size();
+
+                let res = tanh(&a_cost.val).to_shared();
 
                 self.fold_costs(enode, res, op_cost, &[a_cost])
             }

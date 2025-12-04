@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Error, Result, anyhow};
 use egg::{EGraph, Id, Language, RecExpr, Symbol};
 use std::{
     cell::RefCell,
@@ -7,7 +7,7 @@ use std::{
     rc::Rc,
 };
 
-use ndarray::{Array2, s};
+use ndarray::{Array, Array1, Array2, s};
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -16,22 +16,51 @@ use crate::{
 };
 
 #[derive(Deserialize, Debug)]
-pub struct RawLayer {
+struct RawLayer {
     weights: Vec<f64>,
     biases: Vec<f64>,
     input_shape: usize,
     output_shape: usize,
+    activation: String,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+pub enum Activation {
+    Relu,
+    Tanh,
+    Softmax,
+}
+
+impl TryFrom<String> for Activation {
+    type Error = Error;
+
+    fn try_from(value: String) -> std::result::Result<Self, Self::Error> {
+        match value.as_str() {
+            "relu" => Ok(Activation::Relu),
+            "tanh" => Ok(Activation::Tanh),
+            "softmax" => Ok(Activation::Softmax),
+            s => Err(anyhow!("invalid activation function '{}'", s)),
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct ModelLayer {
     pub weights: Array2<f64>,
     pub biases: Array2<f64>,
+    pub activation: Activation,
+}
+
+#[derive(Deserialize, Debug)]
+struct TestSetInternal {
+    mat: Vec<Vec<f64>>,
+    labels: Vec<usize>,
 }
 
 #[derive(Deserialize, Debug)]
 pub struct TestSet {
-    pub mat: Vec<Vec<f64>>,
+    pub mat: Array2<f64>,
+    pub labels: Array1<usize>,
 }
 
 pub fn load_model(filename: &str) -> Result<Vec<ModelLayer>> {
@@ -45,18 +74,27 @@ pub fn load_model(filename: &str) -> Result<Vec<ModelLayer>> {
                 .unwrap()
                 .reversed_axes(),
             biases: Array2::from_shape_vec((l.output_shape, 1), l.biases).unwrap(),
+            activation: l.activation.try_into().unwrap(),
         })
         .collect())
 }
 
-pub fn load_test_set(filename: &str, shape: (usize, usize)) -> Result<Array2<f64>> {
+pub fn load_test_set(filename: &str, shape: (usize, usize), normalize: bool) -> Result<TestSet> {
     let contents = fs::read_to_string(filename)?;
-    let mat: TestSet = serde_json::from_str(&contents)?;
+    let test_set: TestSetInternal = serde_json::from_str(&contents)?;
 
-    let flat = mat.mat.into_iter().flatten().collect::<Vec<_>>();
+    let flat = test_set.mat.into_iter().flatten().collect::<Vec<_>>();
 
-    let out: Array2<f64> = Array2::from_shape_vec(shape, flat)?;
-    Ok(out.map(|x| *x / 255.0).reversed_axes())
+    let mat: Array2<f64> = Array2::from_shape_vec(shape, flat)?;
+    let labels: Array1<usize> = Array::from_vec(test_set.labels);
+
+    let mat = if normalize {
+        mat.map(|x| *x / 255.0)
+    } else {
+        mat
+    }
+    .reversed_axes();
+    Ok(TestSet { mat, labels })
 }
 
 fn into_python(expr: &RecExpr<Linalg>) -> String {
@@ -72,6 +110,7 @@ fn into_python(expr: &RecExpr<Linalg>) -> String {
             }
             Linalg::Relu(a) => format!("relu({})", rec(expr, *a)),
             Linalg::Softmax(a) => format!("softmax({})", rec(expr, *a)),
+            Linalg::Tanh(a) => format!("np.tanh({})", rec(expr, *a)),
             Linalg::Num(i) => i.to_string(),
             Linalg::Mat(sym) => {
                 if sym.as_str() == "x" {
@@ -182,6 +221,7 @@ pub fn export_params(
             }
             Linalg::Relu(a) => rec(&expr.children[a], expr, egraph, var_info),
             Linalg::Softmax(a) => rec(&expr.children[a], expr, egraph, var_info),
+            Linalg::Tanh(a) => rec(&expr.children[a], expr, egraph, var_info),
             Linalg::Num(_) => HashMap::new(),
             Linalg::Mat(sym) => {
                 if sym.as_str() != "x" {

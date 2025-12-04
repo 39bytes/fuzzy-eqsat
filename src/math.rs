@@ -1,7 +1,12 @@
-use ndarray::{ArcArray2, Array2};
+use ndarray::{ArcArray2, Array1, Array2, Axis};
+use ndarray_stats::QuantileExt as _;
 
 pub fn relu(a: &ArcArray2<f64>) -> Array2<f64> {
     a.map(|x| f64::max(*x, 0.0))
+}
+
+pub fn tanh(a: &ArcArray2<f64>) -> Array2<f64> {
+    a.map(|x| x.tanh())
 }
 
 pub fn softmax(input: &ArcArray2<f64>) -> Array2<f64> {
@@ -28,6 +33,20 @@ pub fn softmax(input: &ArcArray2<f64>) -> Array2<f64> {
     }
 
     output
+}
+
+pub fn accuracy(output: &ArcArray2<f64>, labels: &Array1<usize>) -> f64 {
+    let (_, cols) = output.dim();
+    assert_eq!(cols, labels.len());
+
+    let predicted = output.map_axis(Axis(0), |col| col.argmax().unwrap());
+    assert_eq!(predicted.len(), labels.len());
+    predicted
+        .iter()
+        .zip(labels.iter())
+        .map(|(a, b)| if a == b { 1 } else { 0 })
+        .sum::<usize>() as f64
+        / labels.len() as f64
 }
 
 pub fn prune(mat: &ArcArray2<f64>, precision: i32) -> ArcArray2<f64> {

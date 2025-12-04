@@ -1,6 +1,9 @@
 use anyhow::Result;
+use csv::Writer;
 use log::{debug, info};
-use ndarray::Array2;
+use ndarray::{Array1, Array2, Axis};
+use ndarray_stats::QuantileExt;
+use serde::Serialize;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
@@ -10,12 +13,14 @@ use egg::*;
 use std::time::Instant;
 
 use crate::analysis::{AnalysisData, MODEL_INPUT, MatrixData};
-use crate::cost::LinalgCost;
-use crate::extract::{CompleteExtractor, GeneticAlgorithmExtractor, SimulatedAnnealingExtractor};
+use crate::cost::{CostWithErrorBound, LinalgCost};
+use crate::extract::GeneticAlgorithmExtractor;
 use crate::lang::Linalg;
-use crate::math::prune;
+use crate::math::{accuracy, prune};
 use crate::matrix::MatrixValue;
-use crate::model::{ModelLayer, load_model, load_test_set, output_python_file};
+use crate::model::{
+    Activation, ModelLayer, TestSet, load_model, load_test_set, output_python_file,
+};
 use crate::plot::output_pareto;
 
 mod analysis;
@@ -39,11 +44,10 @@ fn make_expr(
     let mut var_info = HashMap::from_iter([(input_sym, MatrixValue::new(test_set.into()))]);
 
     let mut prev_layer_out = model_input;
-    let n_layers = layers.len();
 
     for (i, layer) in layers.into_iter().enumerate() {
-        let weight_mat = Symbol::from(format!("w[{}]", i));
-        let bias = Symbol::from(format!("b[{}]", i));
+        let weight_mat = Symbol::from(format!("w{}", i));
+        let bias = Symbol::from(format!("b{}", i));
 
         var_info.insert(weight_mat, MatrixValue::new(layer.weights.into()));
         var_info.insert(bias, MatrixValue::new(layer.biases.into()));
@@ -52,18 +56,24 @@ fn make_expr(
         let b = expr.add(Linalg::Mat(bias));
         let mul = expr.add(Linalg::Mul([w, prev_layer_out]));
         let add = expr.add(Linalg::Add([mul, b]));
-        prev_layer_out = if i < n_layers - 1 {
-            expr.add(Linalg::Relu(add))
-        } else {
-            expr.add(Linalg::Softmax(add))
-        };
+        prev_layer_out = match layer.activation {
+            Activation::Relu => expr.add(Linalg::Relu(add)),
+            Activation::Tanh => expr.add(Linalg::Tanh(add)),
+            Activation::Softmax => expr.add(Linalg::Softmax(add)),
+        }
     }
 
     Ok((var_info, expr))
 }
 
+struct RewriteParameters {
+    svd_step_scale: Option<i32>,
+    prune_range: Option<(i32, i32)>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct SvdApplier {
+    step_scale: i32,
     a: Var,
     b: Var,
 }
@@ -95,8 +105,10 @@ impl Applier<Linalg, LinalgAnalysis> for SvdApplier {
             _ => return vec![],
         };
 
-        // let step = (rank.ilog2() - 2) as i32;
-        let step = 20;
+        let step = rank.ilog2() as i32 * self.step_scale;
+        if step == 0 {
+            return vec![];
+        }
         let mut changed = vec![];
         let mut k: i32 = rank as i32 - step;
 
@@ -114,7 +126,7 @@ impl Applier<Linalg, LinalgAnalysis> for SvdApplier {
                 changed.push(udvtb);
             }
 
-            k -= step;
+            k -= 20;
         }
 
         changed
@@ -123,6 +135,8 @@ impl Applier<Linalg, LinalgAnalysis> for SvdApplier {
 
 struct PruneApplier {
     a: Var,
+    prune_low: i32,
+    prune_high: i32,
 }
 
 impl Applier<Linalg, LinalgAnalysis> for PruneApplier {
@@ -152,7 +166,7 @@ impl Applier<Linalg, LinalgAnalysis> for PruneApplier {
 
         let mut changed = vec![];
 
-        for precision in -5..-4 {
+        for precision in self.prune_low..(self.prune_low + 1) {
             let sym = Symbol::from(format!(
                 "pruned-{} ({})",
                 egraph.analysis.prune_count, precision
@@ -178,20 +192,29 @@ impl Applier<Linalg, LinalgAnalysis> for PruneApplier {
     }
 }
 
-fn make_rules() -> Vec<Rewrite<Linalg, LinalgAnalysis>> {
+fn make_rules(params: RewriteParameters) -> Vec<Rewrite<Linalg, LinalgAnalysis>> {
     let mut rules: Vec<Rewrite<Linalg, LinalgAnalysis>> = vec![];
     rules.extend(rewrite!("matmul-assoc"; "(* (* ?a ?b) ?c)" <=> "(* ?a (* ?b ?c))"));
-    rules.push(rewrite!("svd-mul"; "(* ?a ?b)" => {
-        SvdApplier {
-            a: "?a".parse().unwrap(),
-            b: "?b".parse().unwrap(),
-        }
-    }));
-    rules.push(rewrite!("prune"; "?a" => {
-        PruneApplier {
-            a: "?a".parse().unwrap()
-        }
-    }));
+    if let Some(step_scale) = params.svd_step_scale {
+        log::info!("Step scale: {}", step_scale);
+        rules.push(rewrite!("svd-mul"; "(* ?a ?b)" => {
+            SvdApplier {
+                a: "?a".parse().unwrap(),
+                b: "?b".parse().unwrap(),
+                step_scale,
+            }
+        }));
+    }
+
+    if let Some((prune_low, prune_high)) = params.prune_range {
+        rules.push(rewrite!("prune"; "?a" => {
+            PruneApplier {
+                a: "?a".parse().unwrap(),
+                prune_low,
+                prune_high,
+            }
+        }));
+    }
 
     rules
 }
@@ -199,24 +222,49 @@ fn make_rules() -> Vec<Rewrite<Linalg, LinalgAnalysis>> {
 fn model_to_egg(
     model_path: &str,
     test_set_path: &str,
-) -> Result<(HashMap<Symbol, MatrixValue>, RecExpr<Linalg>)> {
+    test_set_dim: (usize, usize),
+    normalize: bool,
+) -> Result<(HashMap<Symbol, MatrixValue>, RecExpr<Linalg>, Array1<usize>)> {
     let model = load_model(model_path)?;
-    let test_set = load_test_set(test_set_path, (10000, 784))?;
+    let test_set = load_test_set(test_set_path, test_set_dim, normalize)?;
 
-    let (var_info, expr) = make_expr(model, test_set)?;
+    let (var_info, expr) = make_expr(model, test_set.mat)?;
     for (sym, info) in var_info.iter() {
         debug!("{}: [dim: {:?}]", sym, info.dim());
     }
 
-    Ok((var_info, expr))
+    Ok((var_info, expr, test_set.labels))
+}
+
+// **Metrics**
+// - Number of EClasses
+// - Extraction time
+// - Pareto for explored solutions
+// - Cost
+// - Relative error
+// - Classification error
+// - Execution time ?
+
+#[derive(Serialize)]
+struct Metrics {
+    title: String,
+    eclass_count: usize,
+    extraction_time: u128,
+    optimized_cost: usize,
+    optimized_rel_error: f64,
+    rel_cost_decrease: f64,
+    classification_accuracy: f64,
 }
 
 fn optimize(
-    expr: RecExpr<Linalg>,
+    title: String,
+    expr: &RecExpr<Linalg>,
     var_info: HashMap<Symbol, MatrixValue>,
+    test_set_labels: &Array1<usize>,
     max_rel_error: f64,
-) -> Result<()> {
-    let rules = make_rules();
+    rewrite_params: RewriteParameters,
+) -> (Metrics, Vec<(f64, f64)>) {
+    let rules = make_rules(rewrite_params);
     let var_info = Rc::new(RefCell::new(var_info));
 
     let before = Instant::now();
@@ -225,53 +273,129 @@ fn optimize(
         prune_count: 0,
         pruned_eclasses: HashSet::new(),
     })
-    .with_expr(&expr)
+    .with_expr(expr)
     .run(&rules);
 
-    println!("Analysis took: {}ms", before.elapsed().as_millis());
+    info!("Analysis took: {}ms", before.elapsed().as_millis());
 
-    info!("Number of eclasses: {}", runner.egraph.classes().len());
+    let eclass_count = runner.egraph.classes().len();
+    info!("Number of eclasses: {}", eclass_count);
 
-    info!("Rendering");
-    util::render_egraph(&runner.egraph, ".", "test2");
+    // info!("Rendering");
+    // util::render_egraph(&runner.egraph, ".", "test2");
 
     let before = Instant::now();
     info!("Extracting");
-    let mut extractor = GeneticAlgorithmExtractor::new(
-        &runner.egraph,
-        LinalgCost {
-            egraph: &runner.egraph,
-            var_info: var_info.clone(),
-            max_rel_error,
-        },
+    let mut cf = LinalgCost {
+        egraph: &runner.egraph,
+        var_info: var_info.clone(),
+        max_rel_error,
+    };
+    let initial_cost = cf.cost_rec(expr);
+    info!("Initial: {}", expr);
+    info!(
+        "Initial cost: {}",
+        initial_cost.cost / test_set_labels.len()
     );
-    let (best, best_expr) = extractor.find_best(runner.roots[0], expr);
-    println!("Extraction took: {}ms", before.elapsed().as_millis());
-    //
-    println!("Best: {}", best_expr);
-    println!("Cost: {}, Error: {}", best.cost, best.error.unwrap());
+    info!(
+        "Initial classification accuracy: {}",
+        accuracy(&initial_cost.val, test_set_labels)
+    );
 
-    // let pts: Vec<_> = extractor
-    //     .all_costs(runner.roots[0])
-    //     .iter()
-    //     .map(|c| (c.cost.error.unwrap(), c.cost.cost as f64))
-    //     .collect();
+    let mut extractor = GeneticAlgorithmExtractor::new(&runner.egraph, cf);
+    let (best, best_expr, pareto_points) =
+        extractor.find_best(runner.roots[0], expr.clone(), |c| {
+            (c.error.unwrap(), (c.cost / test_set_labels.len()) as f64)
+        });
+    let extraction_time = before.elapsed().as_millis();
+    info!("Extraction took: {}ms", extraction_time);
 
-    // output_pareto("pareto.svg", &pts)?;
-    // println!("Output plot to pareto.svg");
+    info!("Best: {}", best_expr);
+
+    let optimized_cost = best.cost / test_set_labels.len();
+    let optimized_rel_error = best.error.unwrap();
+    let rel_cost_decrease = (initial_cost.cost - best.cost) as f64 / initial_cost.cost as f64;
+    info!("Cost: {}, Error: {}", optimized_cost, optimized_rel_error);
+    let classification_accuracy = accuracy(&best.val, test_set_labels);
+    info!("Classification accuracy: {}", classification_accuracy);
 
     // let before = Instant::now();
     // output_python_file(best, &best_expr, &runner.egraph, &var_info, "out.py")?;
     // println!("Outputting python took: {}ms", before.elapsed().as_millis());
 
-    Ok(())
+    (
+        Metrics {
+            title,
+            eclass_count,
+            extraction_time,
+            optimized_cost,
+            optimized_rel_error,
+            rel_cost_decrease,
+            classification_accuracy,
+        },
+        pareto_points,
+    )
+}
+
+fn run_experiment(
+    model_name: &str,
+    model_path: &str,
+    test_set_path: &str,
+    test_set_dim: (usize, usize),
+    normalize: bool,
+) {
+    let (var_info, expr, test_set_labels) =
+        model_to_egg(model_path, test_set_path, test_set_dim, normalize)
+            .expect("failed to create egg expr");
+    let errs = [0.02, 0.05, 0.10, 0.25];
+    let svd_scales = [Some(1)];
+    let pruning_thresholds = [Some(-4)];
+
+    let mut writer = Writer::from_path(format!("{}-results.csv", model_name))
+        .expect("failed to create csv writer");
+
+    for err in errs {
+        for svd_scale in svd_scales {
+            for prune_low in pruning_thresholds {
+                let exp_name = format!(
+                    "{}::{}::{}::{}",
+                    model_name,
+                    err,
+                    svd_scale.map(|x| x.to_string()).unwrap_or("None".into()),
+                    prune_low.map(|x| x.to_string()).unwrap_or("None".into())
+                );
+                log::info!("Running experiment {}", exp_name);
+                let (metrics, pareto_points) = optimize(
+                    exp_name.clone(),
+                    &expr,
+                    var_info.clone(),
+                    &test_set_labels,
+                    err,
+                    RewriteParameters {
+                        svd_step_scale: svd_scale,
+                        prune_range: prune_low.map(|x| (x, -1)),
+                    },
+                );
+                writer
+                    .serialize(metrics)
+                    .unwrap_or_else(|_| panic!("failed to write csv record for {}", exp_name));
+                output_pareto(&format!("{}.svg", &exp_name), &pareto_points)
+                    .expect("failed to output pareto graph");
+            }
+        }
+    }
 }
 
 fn main() -> Result<()> {
     env_logger::init();
 
-    let (var_info, expr) = model_to_egg("mnist_model_params.json", "test_set.json")?;
-    optimize(expr, var_info, 0.02)?;
+    run_experiment(
+        "lenet",
+        "lenet_model_params.json",
+        "lenet_test_set.json",
+        (10000, 400),
+        false,
+    );
 
     Ok(())
 }

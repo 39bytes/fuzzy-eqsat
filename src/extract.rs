@@ -3,7 +3,8 @@ use rand::{Rng, rngs::ThreadRng, seq::IndexedRandom};
 use rand_distr::{Bernoulli, Distribution};
 use std::{
     cmp::Ordering,
-    collections::{HashMap, HashSet},
+    collections::{HashMap, HashSet, VecDeque},
+    fmt::Display,
 };
 
 use egg::*;
@@ -196,13 +197,15 @@ pub struct GeneticAlgorithmExtractor<'a, CF: CostFunction<L>, L: Language, N: An
 impl<'a, CF, L, N> GeneticAlgorithmExtractor<'a, CF, L, N>
 where
     CF: CostFunction<L>,
+    CF::Cost: Display,
     L: Language,
     N: Analysis<L>,
 {
-    const POPULATION_SIZE: usize = 50;
-    const MAX_GENERATIONS: usize = 10;
-    const SELECTION_COUNT: f64 = 0.20;
+    const POPULATION_SIZE: usize = 100;
+    const MAX_GENERATIONS: usize = 20;
+    const SELECTION_COUNT: f64 = 0.10;
     const MUTATION_RATE: f64 = 0.05;
+    const CONVERGENCE_GENERATIONS: usize = 5;
 
     pub fn new(egraph: &'a EGraph<L, N>, cost_function: CF) -> Self {
         let eclass_bounds = egraph
@@ -210,7 +213,7 @@ where
             .map(|c| (c.id, egraph[c.id].nodes.len()))
             .collect();
 
-        println!(
+        log::debug!(
             "eclass IDs: {:?}",
             egraph.classes().map(|c| c.id).collect::<Vec<_>>()
         );
@@ -224,10 +227,16 @@ where
         }
     }
 
-    pub fn find_best(&mut self, root: Id, orig: RecExpr<L>) -> (CF::Cost, RecExpr<L>) {
+    pub fn find_best(
+        &mut self,
+        root: Id,
+        orig: RecExpr<L>,
+        to_pareto_point: impl Fn(&CF::Cost) -> (f64, f64),
+    ) -> (CF::Cost, RecExpr<L>, Vec<(f64, f64)>) {
         let selection_cutoff =
             ((Self::POPULATION_SIZE as f64) * Self::SELECTION_COUNT).round() as usize;
         let mut generation = 0;
+        let mut generations_since_improvement = 0;
 
         let mut best_cost = self.cost_function.cost_rec(&orig);
         let mut best_expr = orig;
@@ -235,6 +244,8 @@ where
         let mut population: Vec<_> = (0..Self::POPULATION_SIZE)
             .map(|_| random_sol(&self.eclass_bounds, &mut self.rng))
             .collect();
+
+        let mut pareto_points: Vec<(f64, f64)> = vec![];
 
         while generation < Self::MAX_GENERATIONS {
             let mut population_with_costs: Vec<_> = population
@@ -248,12 +259,29 @@ where
                 })
                 .collect();
 
+            pareto_points.extend(
+                population_with_costs
+                    .iter()
+                    .map(|p| to_pareto_point(&p.1.0)),
+            );
+
             // TODO: Optimize using heap
             population_with_costs.sort_by(|a, b| a.1.0.partial_cmp(&b.1.0).unwrap());
 
             if population_with_costs[0].1.0 < best_cost {
                 best_expr = population_with_costs[0].1.1.clone();
                 best_cost = population_with_costs[0].1.0.clone();
+                generations_since_improvement = 0;
+                log::info!("Found better cost: {}", best_cost)
+            } else {
+                generations_since_improvement += 1;
+                // if generations_since_improvement > Self::CONVERGENCE_GENERATIONS {
+                //     log::info!(
+                //         "Haven't found better solution in {} generations, stopping",
+                //         Self::CONVERGENCE_GENERATIONS,
+                //     );
+                //     break;
+                // }
             }
 
             let fittest: Vec<_> = population_with_costs[..selection_cutoff]
@@ -272,11 +300,11 @@ where
             }
 
             population = next_population;
-            println!("Finished generation {}", generation);
+            log::info!("Finished generation {}", generation);
             generation += 1;
         }
 
-        (best_cost, best_expr)
+        (best_cost, best_expr, pareto_points)
     }
 
     fn crossover(
@@ -311,99 +339,99 @@ where
     }
 }
 
-pub struct SimulatedAnnealingExtractor<'a, CF: CostFunction<L>, L: Language, N: Analysis<L>> {
-    cost_function: CF,
-    egraph: &'a EGraph<L, N>,
-    eclass_bounds: HashMap<Id, usize>,
-    eclass_ids: Vec<Id>,
-    rng: ThreadRng,
-}
-
-impl<'a, CF, L, N> SimulatedAnnealingExtractor<'a, CF, L, N>
-where
-    CF: CostFunction<L>,
-    L: Language,
-    N: Analysis<L>,
-{
-    pub fn new(egraph: &'a EGraph<L, N>, cost_function: CF) -> Self {
-        let eclass_bounds: HashMap<Id, usize> = egraph
-            .classes()
-            .map(|c| (c.id, egraph[c.id].nodes.len()))
-            .collect();
-        let mut eclass_ids: Vec<_> = eclass_bounds.keys().copied().collect();
-        eclass_ids.sort();
-
-        println!(
-            "eclass IDs: {:?}",
-            egraph.classes().map(|c| c.id).collect::<Vec<_>>()
-        );
-
-        SimulatedAnnealingExtractor {
-            egraph,
-            cost_function,
-            eclass_bounds,
-            eclass_ids,
-            rng: rand::rng(),
-        }
-    }
-
-    pub fn find_best(
-        &mut self,
-        root: Id,
-        orig: RecExpr<L>,
-        energy_function: impl Fn(&CF::Cost) -> f64,
-    ) -> (CF::Cost, RecExpr<L>) {
-        let mut sol = random_sol(&self.eclass_bounds, &mut self.rng);
-        let (cur_cost, _) = evaluate_sol(self.egraph, &mut self.cost_function, root, &sol);
-        let mut e = energy_function(&cur_cost);
-
-        let mut best = orig;
-        let mut best_e = e;
-        let mut best_cost = cur_cost;
-        let mut temp = 10000.0;
-        let decay = 0.995;
-
-        while temp > 1.0 {
-            println!("{}", temp);
-            let nxt = self.next_state(&sol);
-            let (cost, expr) = evaluate_sol(self.egraph, &mut self.cost_function, root, &nxt);
-            let nxt_e = energy_function(&cost);
-            if self.should_accept(e, nxt_e, temp) {
-                sol = nxt;
-                if nxt_e < best_e {
-                    best = expr;
-                    best_cost = cost;
-                    best_e = nxt_e;
-                }
-                e = nxt_e;
-            }
-            temp *= decay;
-        }
-
-        (best_cost, best)
-    }
-
-    fn should_accept(&mut self, e: f64, e_next: f64, t: f64) -> bool {
-        let p = f64::exp(-(e_next - e) / t);
-        if p.is_nan() {
-            false
-        } else if p > 1.0 {
-            true
-        } else {
-            self.rng.random_bool(p)
-        }
-    }
-
-    fn next_state(&mut self, sol: &HashMap<Id, usize>) -> HashMap<Id, usize> {
-        let mut nxt = sol.clone();
-        let id = self
-            .eclass_ids
-            .choose(&mut self.rng)
-            .expect("EClasses shouldn't be empty");
-        nxt.insert(*id, self.rng.random_range(0..self.eclass_bounds[id]));
-        nxt
-    }
-}
+// pub struct SimulatedAnnealingExtractor<'a, CF: CostFunction<L>, L: Language, N: Analysis<L>> {
+//     cost_function: CF,
+//     egraph: &'a EGraph<L, N>,
+//     eclass_bounds: HashMap<Id, usize>,
+//     eclass_ids: Vec<Id>,
+//     rng: ThreadRng,
+// }
+//
+// impl<'a, CF, L, N> SimulatedAnnealingExtractor<'a, CF, L, N>
+// where
+//     CF: CostFunction<L>,
+//     L: Language,
+//     N: Analysis<L>,
+// {
+//     pub fn new(egraph: &'a EGraph<L, N>, cost_function: CF) -> Self {
+//         let eclass_bounds: HashMap<Id, usize> = egraph
+//             .classes()
+//             .map(|c| (c.id, egraph[c.id].nodes.len()))
+//             .collect();
+//         let mut eclass_ids: Vec<_> = eclass_bounds.keys().copied().collect();
+//         eclass_ids.sort();
+//
+//         log::debug!(
+//             "eclass IDs: {:?}",
+//             egraph.classes().map(|c| c.id).collect::<Vec<_>>()
+//         );
+//
+//         SimulatedAnnealingExtractor {
+//             egraph,
+//             cost_function,
+//             eclass_bounds,
+//             eclass_ids,
+//             rng: rand::rng(),
+//         }
+//     }
+//
+//     pub fn find_best(
+//         &mut self,
+//         root: Id,
+//         orig: RecExpr<L>,
+//         energy_function: impl Fn(&CF::Cost) -> f64,
+//     ) -> (CF::Cost, RecExpr<L>) {
+//         let mut sol = random_sol(&self.eclass_bounds, &mut self.rng);
+//         let (cur_cost, _) = evaluate_sol(self.egraph, &mut self.cost_function, root, &sol);
+//         let mut e = energy_function(&cur_cost);
+//
+//         let mut best = orig;
+//         let mut best_e = e;
+//         let mut best_cost = cur_cost;
+//         let mut temp = 2000.0;
+//         let decay = 0.995;
+//
+//         while temp > 1.0 {
+//             log::info!("{}", temp);
+//             let nxt = self.next_state(&sol);
+//             let (cost, expr) = evaluate_sol(self.egraph, &mut self.cost_function, root, &nxt);
+//             let nxt_e = energy_function(&cost);
+//             if self.should_accept(e, nxt_e, temp) {
+//                 sol = nxt;
+//                 if nxt_e < best_e {
+//                     best = expr;
+//                     best_cost = cost;
+//                     best_e = nxt_e;
+//                 }
+//                 e = nxt_e;
+//             }
+//             temp *= decay;
+//         }
+//
+//         (best_cost, best)
+//     }
+//
+//     fn should_accept(&mut self, e: f64, e_next: f64, t: f64) -> bool {
+//         let p = f64::exp(-(e_next - e) / t);
+//         if p.is_nan() {
+//             false
+//         } else if p > 1.0 {
+//             true
+//         } else {
+//             self.rng.random_bool(p)
+//         }
+//     }
+//
+//     fn next_state(&mut self, sol: &HashMap<Id, usize>) -> HashMap<Id, usize> {
+//         let mut nxt = sol.clone();
+//         let id = self
+//             .eclass_ids
+//             .choose(&mut self.rng)
+//             .expect("EClasses shouldn't be empty");
+//         nxt.insert(*id, self.rng.random_range(0..self.eclass_bounds[id]));
+//         nxt
+//     }
+// }
 
 fn random_sol(eclass_bounds: &HashMap<Id, usize>, rng: &mut ThreadRng) -> HashMap<Id, usize> {
     eclass_bounds
@@ -422,32 +450,71 @@ where
     L: Language,
     N: Analysis<L>,
     CF: CostFunction<L>,
+    CF::Cost: Display,
 {
     let mut costs: HashMap<Id, CF::Cost> = HashMap::new();
 
-    // TODO: optimize this? (toposort maybe?)
-    let mut did_something = true;
-    while did_something {
-        did_something = false;
+    let mut in_degrees = HashMap::<Id, usize>::new();
+    let mut reversed_edges = HashMap::<Id, Vec<Id>>::new();
+    let mut visited = HashSet::new();
+    let mut stack = vec![root];
+    let mut queue = VecDeque::<Id>::new();
 
-        for class in egraph.classes() {
-            let id = class.id;
-            if costs.contains_key(&id) {
-                continue;
-            }
-            let enode = &class.nodes[sol[&id]];
-            if !enode.all(|id| costs.contains_key(&egraph.find(id))) {
-                continue;
-            }
+    while let Some(cur) = stack.pop() {
+        visited.insert(cur);
+        let children = egraph[cur].nodes[sol[&cur]].children();
 
-            let cost = cost_function.cost(enode, |id| costs[&id].clone());
-            costs.insert(class.id, cost);
-            did_something = true;
+        in_degrees.insert(cur, children.len());
+        if children.is_empty() {
+            queue.push_back(cur);
+        }
+        for child in children {
+            if !visited.contains(child) {
+                stack.push(*child);
+            }
+            reversed_edges.entry(*child).or_default().push(cur);
         }
     }
+
+    while let Some(id) = queue.pop_front() {
+        let enode = &egraph[id].nodes[sol[&id]];
+        let cost = cost_function.cost(enode, |id| costs[&id].clone());
+        costs.insert(id, cost);
+        if let Some(neighbors) = reversed_edges.get(&id) {
+            for neighbor in neighbors {
+                let deg = in_degrees.get_mut(neighbor).expect("should exist");
+                *deg -= 1;
+                if *deg == 0 {
+                    queue.push_back(*neighbor);
+                }
+            }
+        }
+    }
+
+    // // TODO: optimize this? (toposort maybe?)
+    // let mut did_something = true;
+    // while did_something {
+    //     did_something = false;
+    //
+    //     for class in egraph.classes() {
+    //         let id = class.id;
+    //         if costs.contains_key(&id) {
+    //             continue;
+    //         }
+    //         let enode = &class.nodes[sol[&id]];
+    //         if !enode.all(|id| costs.contains_key(&egraph.find(id))) {
+    //             continue;
+    //         }
+    //
+    //         let cost = cost_function.cost(enode, |id| costs[&id].clone());
+    //         costs.insert(class.id, cost);
+    //         did_something = true;
+    //     }
+    // }
 
     // TODO: avoid unnecessary building of recexpr every time?
     let root_node = egraph[root].nodes[sol[&root]].clone();
     let recexpr = root_node.build_recexpr(|id| egraph[id].nodes[sol[&id]].clone());
+    // println!("{}", costs[&root]);
     (costs[&root].clone(), recexpr)
 }

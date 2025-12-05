@@ -34,18 +34,17 @@ impl Display for CostWithErrorBound {
 
 impl PartialOrd for CostWithErrorBound {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        let a = if self.error.unwrap_or(0.0) > self.max_rel_error {
-            usize::MAX
+        let a_err = self.error.unwrap_or(0.0);
+        let b_err = other.error.unwrap_or(0.0);
+        if a_err > self.max_rel_error && b_err > self.max_rel_error {
+            a_err.partial_cmp(&b_err)
+        } else if a_err > self.max_rel_error {
+            Some(Ordering::Greater)
+        } else if b_err > self.max_rel_error {
+            Some(Ordering::Less)
         } else {
-            self.cost
-        };
-        let b = if other.error.unwrap_or(0.0) > other.max_rel_error {
-            usize::MAX
-        } else {
-            other.cost
-        };
-
-        a.partial_cmp(&b)
+            self.cost.partial_cmp(&other.cost)
+        }
     }
 }
 

@@ -2,10 +2,14 @@ use plotters::prelude::*;
 
 use anyhow::Result;
 
-pub fn output_pareto(filename: &str, points: &[(f64, f64)]) -> Result<()> {
+pub fn output_pareto<T: AsRef<std::path::Path> + std::fmt::Debug>(
+    filename: T,
+    points: &[(f64, f64)],
+) -> Result<()> {
     assert!(!points.is_empty());
 
-    let root = SVGBackend::new(filename, (1024, 768)).into_drawing_area();
+    println!("{:?}", filename);
+    let root = SVGBackend::new(&filename, (1024, 768)).into_drawing_area();
 
     root.fill(&WHITE)?;
 

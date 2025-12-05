@@ -4,6 +4,7 @@ use std::{
     cell::RefCell,
     collections::HashMap,
     fs::{self},
+    path::Path,
     rc::Rc,
 };
 
@@ -11,7 +12,10 @@ use ndarray::{Array, Array1, Array2, s};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    analysis::LinalgAnalysis, cost::LinalgCost, extract::CandidateExpr, lang::Linalg,
+    analysis::{LinalgAnalysis, MODEL_INPUT},
+    cost::LinalgCost,
+    extract::{self, CandidateExpr},
+    lang::Linalg,
     matrix::MatrixValue,
 };
 
@@ -136,130 +140,166 @@ struct Parameter {
     val: Vec<f64>,
 }
 
-pub fn export_params(
-    expr: &CandidateExpr<LinalgCost, Linalg>,
+fn make_recexpr(
+    node: &Linalg,
+    sol: &extract::Solution,
+    egraph: &EGraph<Linalg, LinalgAnalysis>,
+) -> RecExpr<Linalg> {
+    node.build_recexpr(|id| egraph[id].nodes[sol[&id]].clone())
+}
+
+fn gather_params(
+    id: Id,
+    sol: &extract::Solution,
     egraph: &EGraph<Linalg, LinalgAnalysis>,
     var_info: &Rc<RefCell<HashMap<Symbol, MatrixValue>>>,
-    filename: &str,
-) -> Result<()> {
-    fn rec(
-        node: &Linalg,
-        expr: &CandidateExpr<LinalgCost, Linalg>,
-        egraph: &EGraph<Linalg, LinalgAnalysis>,
-        var_info: &Rc<RefCell<HashMap<Symbol, MatrixValue>>>,
-    ) -> HashMap<String, Parameter> {
-        match node {
-            Linalg::Add([a, b]) | Linalg::Mul([a, b]) => {
-                let mut m1 = rec(&expr.children[a], expr, egraph, var_info);
-                m1.extend(rec(&expr.children[b], expr, egraph, var_info));
-                m1
-            }
-            Linalg::SvdU([a, k]) => {
-                let a = egraph[*a].data.unwrap_mat();
-                let k = egraph[*k].data.unwrap_num() as usize;
+) -> HashMap<String, Parameter> {
+    let node = &egraph[id].nodes[sol[&id]];
+    match node {
+        Linalg::Add([a, b]) | Linalg::Mul([a, b]) => {
+            let mut m1 = gather_params(*a, sol, egraph, var_info);
+            m1.extend(gather_params(*b, sol, egraph, var_info));
+            m1
+        }
+        Linalg::SvdU([a, k]) => {
+            let a = egraph[*a].data.unwrap_mat();
+            let k = egraph[*k].data.unwrap_num() as usize;
 
-                let trunc = a
-                    .canonical_value
-                    .as_ref()
-                    .unwrap()
-                    .svd()
-                    .0
-                    .clone()
-                    .slice_move(s![.., ..k])
-                    .to_owned();
+            let trunc = a
+                .canonical_value
+                .as_ref()
+                .unwrap()
+                .svd()
+                .0
+                .clone()
+                .slice_move(s![.., ..k])
+                .to_owned();
 
-                let e = node.build_recexpr(|id| expr.children[&id].clone());
+            HashMap::from([(
+                make_recexpr(node, sol, egraph).to_string(),
+                Parameter {
+                    shape: trunc.shape().to_vec(),
+                    val: trunc.into_iter().collect(),
+                },
+            )])
+        }
+        Linalg::SvdD([a, k]) => {
+            let a = egraph[*a].data.unwrap_mat();
+            let k = egraph[*k].data.unwrap_num() as usize;
+
+            let trunc =
+                Array2::from_diag(&a.canonical_value.clone().unwrap().svd().1.slice(s![..k]));
+
+            HashMap::from([(
+                make_recexpr(node, sol, egraph).to_string(),
+                Parameter {
+                    shape: trunc.shape().to_vec(),
+                    val: trunc.into_iter().collect(),
+                },
+            )])
+        }
+        Linalg::SvdVt([a, k]) => {
+            let a = egraph[*a].data.unwrap_mat();
+            let k = egraph[*k].data.unwrap_num() as usize;
+
+            let trunc = a
+                .canonical_value
+                .as_ref()
+                .unwrap()
+                .svd()
+                .2
+                .clone()
+                .slice_move(s![..k, ..])
+                .to_owned();
+
+            HashMap::from([(
+                make_recexpr(node, sol, egraph).to_string(),
+                Parameter {
+                    shape: trunc.shape().to_vec(),
+                    val: trunc.into_iter().collect(),
+                },
+            )])
+        }
+        Linalg::Relu(a) | Linalg::Softmax(a) | Linalg::Tanh(a) => {
+            gather_params(*a, sol, egraph, var_info)
+        }
+        Linalg::Num(_) => HashMap::new(),
+        Linalg::Mat(sym) => {
+            if sym.as_str() != "x" {
+                let val = var_info.borrow()[sym].val().to_owned();
 
                 HashMap::from([(
-                    e.to_string(),
+                    sym.to_string(),
                     Parameter {
-                        shape: trunc.shape().to_vec(),
-                        val: trunc.into_iter().collect(),
+                        shape: val.shape().to_vec(),
+                        val: val.into_iter().collect(),
                     },
                 )])
-            }
-            Linalg::SvdD([a, k]) => {
-                let a = egraph[*a].data.unwrap_mat();
-                let k = egraph[*k].data.unwrap_num() as usize;
-
-                let trunc =
-                    Array2::from_diag(&a.canonical_value.clone().unwrap().svd().1.slice(s![..k]));
-
-                let e = node.build_recexpr(|id| expr.children[&id].clone());
-
-                HashMap::from([(
-                    e.to_string(),
-                    Parameter {
-                        shape: trunc.shape().to_vec(),
-                        val: trunc.into_iter().collect(),
-                    },
-                )])
-            }
-            Linalg::SvdVt([a, k]) => {
-                let a = egraph[*a].data.unwrap_mat();
-                let k = egraph[*k].data.unwrap_num() as usize;
-
-                let trunc = a
-                    .canonical_value
-                    .as_ref()
-                    .unwrap()
-                    .svd()
-                    .2
-                    .clone()
-                    .slice_move(s![..k, ..])
-                    .to_owned();
-
-                let e = node.build_recexpr(|id| expr.children[&id].clone());
-
-                HashMap::from([(
-                    e.to_string(),
-                    Parameter {
-                        shape: trunc.shape().to_vec(),
-                        val: trunc.into_iter().collect(),
-                    },
-                )])
-            }
-            Linalg::Relu(a) => rec(&expr.children[a], expr, egraph, var_info),
-            Linalg::Softmax(a) => rec(&expr.children[a], expr, egraph, var_info),
-            Linalg::Tanh(a) => rec(&expr.children[a], expr, egraph, var_info),
-            Linalg::Num(_) => HashMap::new(),
-            Linalg::Mat(sym) => {
-                if sym.as_str() != "x" {
-                    let val = var_info.borrow()[sym].val().to_owned();
-
-                    HashMap::from([(
-                        sym.to_string(),
-                        Parameter {
-                            shape: val.shape().to_vec(),
-                            val: val.into_iter().collect(),
-                        },
-                    )])
-                } else {
-                    HashMap::default()
-                }
+            } else {
+                HashMap::default()
             }
         }
     }
+}
 
-    let params = Parameters {
-        params: rec(&expr.node, expr, egraph, var_info),
+pub fn export_params<T: AsRef<Path>>(
+    root: Id,
+    sol: Option<&extract::Solution>,
+    egraph: &EGraph<Linalg, LinalgAnalysis>,
+    var_info: &Rc<RefCell<HashMap<Symbol, MatrixValue>>>,
+    filename: T,
+) -> Result<()> {
+    let params = match sol {
+        None => var_info
+            .borrow()
+            .iter()
+            .filter_map(|(sym, val)| {
+                if sym.as_str() == MODEL_INPUT || sym.as_str().contains("pruned") {
+                    None
+                } else {
+                    Some((
+                        sym.to_string(),
+                        Parameter {
+                            shape: val.val().shape().to_vec(),
+                            val: val.val().iter().copied().collect(),
+                        },
+                    ))
+                }
+            })
+            .collect(),
+        Some(sol) => gather_params(root, sol, egraph, var_info),
     };
 
-    fs::write(filename, serde_json::to_string_pretty(&params)?)?;
+    fs::write(
+        filename,
+        serde_json::to_string_pretty(&Parameters { params })?,
+    )?;
 
     Ok(())
 }
 
-pub fn output_python_file(
-    best: &CandidateExpr<LinalgCost, Linalg>,
-    expr: &RecExpr<Linalg>,
+pub fn output_python_file<T: AsRef<Path>>(
+    root: Id,
+    sol: Option<&extract::Solution>,
+    orig: &RecExpr<Linalg>,
     egraph: &EGraph<Linalg, LinalgAnalysis>,
     var_info: &Rc<RefCell<HashMap<Symbol, MatrixValue>>>,
-    output_path: &str,
+    output_dir: T,
 ) -> Result<()> {
-    let py_expr = into_python(expr);
+    let recexpr = match sol {
+        Some(sol) => &make_recexpr(&egraph[root].nodes[sol[&root]], sol, egraph),
+        None => orig,
+    };
 
-    export_params(best, egraph, var_info, "parameters.json")?;
+    let py_expr = into_python(recexpr);
+
+    export_params(
+        root,
+        sol,
+        egraph,
+        var_info,
+        output_dir.as_ref().join("parameters.json"),
+    )?;
     let prelude = include_str!("template/prelude.py");
 
     let out = format!(
@@ -282,7 +322,7 @@ if __name__ == \"__main__\":
 "
     );
 
-    fs::write(output_path, out)?;
+    fs::write(output_dir.as_ref().join("out.py"), out)?;
 
     Ok(())
 }

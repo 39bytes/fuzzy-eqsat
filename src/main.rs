@@ -168,7 +168,7 @@ impl Applier<Linalg, LinalgAnalysis> for PruneApplier {
 
         let mut changed = vec![];
 
-        for precision in self.prune_low..(self.prune_low + 1) {
+        for precision in self.prune_low..self.prune_high {
             let sym = Symbol::from(format!(
                 "pruned-{} ({})",
                 egraph.analysis.prune_count, precision
@@ -258,6 +258,15 @@ struct Metrics {
     classification_accuracy: f64,
 }
 
+struct EqSatResult {
+    metrics: Metrics,
+    optimized: Option<extract::Solution>,
+    pareto_points: Vec<(f64, f64)>,
+    root: Id,
+    egraph: EGraph<Linalg, LinalgAnalysis>,
+    var_info: Rc<RefCell<HashMap<Symbol, MatrixValue>>>,
+}
+
 fn optimize(
     title: String,
     expr: &RecExpr<Linalg>,
@@ -265,7 +274,7 @@ fn optimize(
     test_set_labels: &Array1<usize>,
     max_rel_error: f64,
     rewrite_params: RewriteParameters,
-) -> (Metrics, Vec<(f64, f64)>) {
+) -> EqSatResult {
     let rules = make_rules(rewrite_params);
     let var_info = Rc::new(RefCell::new(var_info));
 
@@ -305,28 +314,25 @@ fn optimize(
     );
 
     let mut extractor = GeneticAlgorithmExtractor::new(&runner.egraph, cf);
-    let (best, best_expr, pareto_points) =
-        extractor.find_best(runner.roots[0], expr.clone(), |c| {
-            (c.error.unwrap(), (c.cost / test_set_labels.len()) as f64)
-        });
+    let root = runner.roots[0];
+    let (best, best_sol, pareto_points) = extractor.find_best(root, expr.clone(), |c| {
+        (c.error.unwrap(), (c.cost / test_set_labels.len()) as f64)
+    });
     let extraction_time = before.elapsed().as_millis();
     info!("Extraction took: {}ms", extraction_time);
-
-    info!("Best: {}", best_expr);
 
     let optimized_cost = best.cost / test_set_labels.len();
     let optimized_rel_error = best.error.unwrap();
     let rel_cost_decrease = (initial_cost.cost - best.cost) as f64 / initial_cost.cost as f64;
-    info!("Cost: {}, Error: {}", optimized_cost, optimized_rel_error);
+    info!(
+        "Optimized cost: {}, Error: {}",
+        optimized_cost, optimized_rel_error
+    );
     let classification_accuracy = accuracy(&best.val, test_set_labels);
     info!("Classification accuracy: {}", classification_accuracy);
 
-    // let before = Instant::now();
-    output_python_file(best, &best_expr, &runner.egraph, &var_info, "out.py").unwrap();
-    // println!("Outputting python took: {}ms", before.elapsed().as_millis());
-
-    (
-        Metrics {
+    EqSatResult {
+        metrics: Metrics {
             title,
             eclass_count,
             extraction_time,
@@ -335,8 +341,12 @@ fn optimize(
             rel_cost_decrease,
             classification_accuracy,
         },
+        optimized: best_sol,
         pareto_points,
-    )
+        root,
+        egraph: runner.egraph,
+        var_info,
+    }
 }
 
 fn run_experiment(
@@ -349,35 +359,37 @@ fn run_experiment(
     let (var_info, expr, test_set_labels) =
         model_to_egg(model_path, test_set_path, test_set_dim, normalize)
             .expect("failed to create egg expr");
-    let errs = [0.01, 0.02, 0.05, 0.10, 0.25];
-    let rewrite_combs = [
-        (Some(1), None),
-        (None, Some((-3, 0))),
-        (Some(1), Some((-3, 0))),
-    ];
+    // let errs = [0.01, 0.02, 0.05, 0.10, 0.25];
+    // let rewrite_combs = [
+    //     (Some(1), None),
+    //     (None, Some((-3, 0))),
+    //     (Some(1), Some((-3, 0))),
+    // ];
 
-    let mut experiment_dir = PathBuf::from("experiments");
-    experiment_dir.push(model_name);
+    let errs = [0.01];
+    let rewrite_combs = [(Some(1), Some((-3, 0)))];
 
-    if !fs::exists(&experiment_dir).expect("should be able to check") {
-        fs::create_dir_all(&experiment_dir).expect("failed to create experiments dir");
-    }
+    let experiment_dir: PathBuf = ["experiments", model_name].iter().collect();
 
-    let mut writer = Writer::from_path(experiment_dir.with_file_name("results.csv"))
-        .expect("failed to create csv writer");
+    fs::create_dir_all(&experiment_dir).expect("failed to create experiments dir");
+
+    let mut writer =
+        Writer::from_path(experiment_dir.join("results.csv")).expect("failed to create csv writer");
 
     for (svd_scale, prune_range) in rewrite_combs {
-        for err in errs {
+        for (i, err) in errs.into_iter().enumerate() {
             let exp_name = format!(
                 "{}::{}::{}::{}",
                 model_name,
-                err,
+                i,
                 svd_scale.map(|x| x.to_string()).unwrap_or("None".into()),
                 prune_range
                     .map(|x| format!("[{}-{}]", x.0, x.1))
                     .unwrap_or("None".into()),
             );
-            let (metrics, pareto_points) = (0..3)
+            let experiment_dir = experiment_dir.join(&exp_name);
+            fs::create_dir_all(&experiment_dir).expect("failed to create experiments dir");
+            let result = (0..3)
                 .map(|_| {
                     log::info!("Running experiment {}", exp_name);
                     optimize(
@@ -392,14 +404,23 @@ fn run_experiment(
                         },
                     )
                 })
-                .max_by_key(|x| x.0.optimized_cost)
+                .min_by_key(|x| x.metrics.optimized_cost)
                 .unwrap();
 
             writer
-                .serialize(metrics)
+                .serialize(result.metrics)
                 .unwrap_or_else(|_| panic!("failed to write csv record for {}", exp_name));
-            output_pareto(&format!("{}.svg", &exp_name), &pareto_points)
+            output_pareto(experiment_dir.join("pareto.svg"), &result.pareto_points)
                 .expect("failed to output pareto graph");
+            output_python_file(
+                result.root,
+                result.optimized.as_ref(),
+                &expr,
+                &result.egraph,
+                &result.var_info,
+                &experiment_dir,
+            )
+            .expect("failed to output python file");
         }
     }
 }
@@ -407,12 +428,24 @@ fn run_experiment(
 fn main() -> Result<()> {
     env_logger::init();
 
+    // optimize(
+    //     "test",
+    //     &expr,
+    //     var_info.clone(),
+    //     &test_set_labels,
+    //     err,
+    //     RewriteParameters {
+    //         svd_step_scale: svd_scale,
+    //         prune_range,
+    //     },
+    // )
+
     run_experiment(
-        "lenet",
-        "lenet_model_params.json",
-        "lenet_test_set.json",
-        (10000, 400),
-        false,
+        "mlp",
+        "mnist_model_params.json",
+        "mnist_test_set.json",
+        (10000, 784),
+        true,
     );
 
     Ok(())

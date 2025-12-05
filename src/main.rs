@@ -6,6 +6,8 @@ use ndarray_stats::QuantileExt;
 use serde::Serialize;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
+use std::fs;
+use std::path::PathBuf;
 use std::rc::Rc;
 
 use analysis::LinalgAnalysis;
@@ -320,7 +322,7 @@ fn optimize(
     info!("Classification accuracy: {}", classification_accuracy);
 
     // let before = Instant::now();
-    // output_python_file(best, &best_expr, &runner.egraph, &var_info, "out.py")?;
+    output_python_file(best, &best_expr, &runner.egraph, &var_info, "out.py").unwrap();
     // println!("Outputting python took: {}ms", before.elapsed().as_millis());
 
     (
@@ -347,41 +349,57 @@ fn run_experiment(
     let (var_info, expr, test_set_labels) =
         model_to_egg(model_path, test_set_path, test_set_dim, normalize)
             .expect("failed to create egg expr");
-    let errs = [0.02, 0.05, 0.10, 0.25];
-    let svd_scales = [Some(1)];
-    let pruning_thresholds = [Some(-4)];
+    let errs = [0.01, 0.02, 0.05, 0.10, 0.25];
+    let rewrite_combs = [
+        (Some(1), None),
+        (None, Some((-3, 0))),
+        (Some(1), Some((-3, 0))),
+    ];
 
-    let mut writer = Writer::from_path(format!("{}-results.csv", model_name))
+    let mut experiment_dir = PathBuf::from("experiments");
+    experiment_dir.push(model_name);
+
+    if !fs::exists(&experiment_dir).expect("should be able to check") {
+        fs::create_dir_all(&experiment_dir).expect("failed to create experiments dir");
+    }
+
+    let mut writer = Writer::from_path(experiment_dir.with_file_name("results.csv"))
         .expect("failed to create csv writer");
 
-    for err in errs {
-        for svd_scale in svd_scales {
-            for prune_low in pruning_thresholds {
-                let exp_name = format!(
-                    "{}::{}::{}::{}",
-                    model_name,
-                    err,
-                    svd_scale.map(|x| x.to_string()).unwrap_or("None".into()),
-                    prune_low.map(|x| x.to_string()).unwrap_or("None".into())
-                );
-                log::info!("Running experiment {}", exp_name);
-                let (metrics, pareto_points) = optimize(
-                    exp_name.clone(),
-                    &expr,
-                    var_info.clone(),
-                    &test_set_labels,
-                    err,
-                    RewriteParameters {
-                        svd_step_scale: svd_scale,
-                        prune_range: prune_low.map(|x| (x, -1)),
-                    },
-                );
-                writer
-                    .serialize(metrics)
-                    .unwrap_or_else(|_| panic!("failed to write csv record for {}", exp_name));
-                output_pareto(&format!("{}.svg", &exp_name), &pareto_points)
-                    .expect("failed to output pareto graph");
-            }
+    for (svd_scale, prune_range) in rewrite_combs {
+        for err in errs {
+            let exp_name = format!(
+                "{}::{}::{}::{}",
+                model_name,
+                err,
+                svd_scale.map(|x| x.to_string()).unwrap_or("None".into()),
+                prune_range
+                    .map(|x| format!("[{}-{}]", x.0, x.1))
+                    .unwrap_or("None".into()),
+            );
+            let (metrics, pareto_points) = (0..3)
+                .map(|_| {
+                    log::info!("Running experiment {}", exp_name);
+                    optimize(
+                        exp_name.clone(),
+                        &expr,
+                        var_info.clone(),
+                        &test_set_labels,
+                        err,
+                        RewriteParameters {
+                            svd_step_scale: svd_scale,
+                            prune_range,
+                        },
+                    )
+                })
+                .max_by_key(|x| x.0.optimized_cost)
+                .unwrap();
+
+            writer
+                .serialize(metrics)
+                .unwrap_or_else(|_| panic!("failed to write csv record for {}", exp_name));
+            output_pareto(&format!("{}.svg", &exp_name), &pareto_points)
+                .expect("failed to output pareto graph");
         }
     }
 }

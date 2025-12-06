@@ -355,26 +355,21 @@ fn run_experiment(
     test_set_path: &str,
     test_set_dim: (usize, usize),
     normalize: bool,
-) {
+) -> Result<()> {
     let (var_info, expr, test_set_labels) =
-        model_to_egg(model_path, test_set_path, test_set_dim, normalize)
-            .expect("failed to create egg expr");
-    // let errs = [0.01, 0.02, 0.05, 0.10, 0.25];
-    // let rewrite_combs = [
-    //     (Some(1), None),
-    //     (None, Some((-3, 0))),
-    //     (Some(1), Some((-3, 0))),
-    // ];
-
-    let errs = [0.01];
-    let rewrite_combs = [(Some(1), Some((-3, 0)))];
+        model_to_egg(model_path, test_set_path, test_set_dim, normalize)?;
+    let errs = [0.01, 0.02, 0.05, 0.10, 0.25];
+    let rewrite_combs = [
+        (Some(1), None),
+        (None, Some((-3, 0))),
+        (Some(1), Some((-3, 0))),
+    ];
 
     let experiment_dir: PathBuf = ["experiments", model_name].iter().collect();
 
-    fs::create_dir_all(&experiment_dir).expect("failed to create experiments dir");
+    fs::create_dir_all(&experiment_dir)?;
 
-    let mut writer =
-        Writer::from_path(experiment_dir.join("results.csv")).expect("failed to create csv writer");
+    let mut writer = Writer::from_path(experiment_dir.join("results.csv"))?;
 
     for (svd_scale, prune_range) in rewrite_combs {
         for (i, err) in errs.into_iter().enumerate() {
@@ -388,7 +383,7 @@ fn run_experiment(
                     .unwrap_or("None".into()),
             );
             let experiment_dir = experiment_dir.join(&exp_name);
-            fs::create_dir_all(&experiment_dir).expect("failed to create experiments dir");
+            fs::create_dir_all(&experiment_dir)?;
             let result = (0..3)
                 .map(|_| {
                     log::info!("Running experiment {}", exp_name);
@@ -407,11 +402,15 @@ fn run_experiment(
                 .min_by_key(|x| x.metrics.optimized_cost)
                 .unwrap();
 
-            writer
-                .serialize(result.metrics)
-                .unwrap_or_else(|_| panic!("failed to write csv record for {}", exp_name));
-            output_pareto(experiment_dir.join("pareto.svg"), &result.pareto_points)
-                .expect("failed to output pareto graph");
+            writer.serialize(result.metrics)?;
+
+            output_pareto(experiment_dir.join("pareto.svg"), &result.pareto_points)?;
+
+            fs::write(
+                experiment_dir.join("pareto_points.json"),
+                serde_json::to_string_pretty(&result.pareto_points)?,
+            )?;
+
             output_python_file(
                 result.root,
                 result.optimized.as_ref(),
@@ -419,10 +418,12 @@ fn run_experiment(
                 &result.egraph,
                 &result.var_info,
                 &experiment_dir,
-            )
-            .expect("failed to output python file");
+            )?;
         }
     }
+    writer.flush()?;
+
+    Ok(())
 }
 
 fn main() -> Result<()> {
@@ -441,12 +442,12 @@ fn main() -> Result<()> {
     // )
 
     run_experiment(
-        "mlp",
-        "mnist_model_params.json",
-        "mnist_test_set.json",
-        (10000, 784),
-        true,
-    );
+        "lenet",
+        "lenet_model_params.json",
+        "lenet_test_set.json",
+        (10000, 400),
+        false,
+    )?;
 
     Ok(())
 }

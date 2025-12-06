@@ -207,7 +207,7 @@ where
     N: Analysis<L>,
 {
     const POPULATION_SIZE: usize = 100;
-    const MAX_GENERATIONS: usize = 20;
+    const MAX_GENERATIONS: usize = 10;
     const SELECTION_COUNT: f64 = 0.15;
     const MUTATION_RATE: f64 = 0.05;
     const CONVERGENCE_GENERATIONS: usize = 5;

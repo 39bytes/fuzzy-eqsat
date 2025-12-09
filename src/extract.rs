@@ -1,191 +1,11 @@
-use indexmap::IndexMap;
 use rand::{Rng, rngs::ThreadRng};
 use rand_distr::{Bernoulli, Distribution, weighted::WeightedIndex};
 use std::{
-    cmp::Ordering,
     collections::{HashMap, HashSet, VecDeque},
     fmt::Display,
 };
 
 use egg::*;
-
-pub struct CompleteExtractor<'a, CF: CostFunction<L>, L: Language, N: Analysis<L>> {
-    cost_function: CF,
-    costs: HashMap<Id, Vec<CandidateExpr<CF, L>>>,
-    egraph: &'a EGraph<L, N>,
-}
-
-pub struct CandidateExpr<CF: CostFunction<L>, L: Language> {
-    pub cost: CF::Cost,
-    pub node: L,
-    pub children: HashMap<Id, L>,
-}
-
-impl<CF: CostFunction<L>, L: Language> PartialEq for CandidateExpr<CF, L> {
-    fn eq(&self, other: &Self) -> bool {
-        self.cost.eq(&other.cost)
-    }
-}
-
-impl<CF: CostFunction<L>, L: Language> PartialOrd for CandidateExpr<CF, L> {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl<CF: CostFunction<L>, L: Language> Eq for CandidateExpr<CF, L> {}
-
-impl<CF: CostFunction<L>, L: Language> Ord for CandidateExpr<CF, L> {
-    fn cmp(&self, other: &Self) -> Ordering {
-        self.cost.partial_cmp(&other.cost).unwrap()
-    }
-}
-
-#[allow(dead_code)]
-impl<'a, CF, L, N> CompleteExtractor<'a, CF, L, N>
-where
-    CF: CostFunction<L>,
-    L: Language,
-    N: Analysis<L>,
-{
-    pub fn new(egraph: &'a EGraph<L, N>, cost_function: CF) -> Self {
-        let costs = HashMap::default();
-        let mut extractor = CompleteExtractor {
-            costs,
-            egraph,
-            cost_function,
-        };
-        extractor.find_costs();
-
-        extractor
-    }
-
-    pub fn find_best(&self, eclass: Id) -> (&CandidateExpr<CF, L>, RecExpr<L>) {
-        let all_possible_costs = &self.costs[&self.egraph.find(eclass)];
-
-        let best = all_possible_costs.iter().min().unwrap();
-        let expr = best.node.build_recexpr(|id| best.children[&id].clone());
-
-        (best, expr)
-    }
-
-    pub fn all_costs(&self, eclass: Id) -> &Vec<CandidateExpr<CF, L>> {
-        &self.costs[&self.egraph.find(eclass)]
-    }
-
-    pub fn find_best_node(&self, eclass: Id) -> &L {
-        let possible_costs = &self.costs[&self.egraph.find(eclass)];
-        &possible_costs.iter().min().unwrap().node
-    }
-
-    pub fn find_best_cost(&self, eclass: Id) -> CF::Cost {
-        let possible_costs = &self.costs[&self.egraph.find(eclass)];
-        possible_costs.iter().min().unwrap().cost.clone()
-    }
-
-    fn has_all_costs(&self, node: &L) -> bool {
-        node.all(|id| self.costs.contains_key(&self.egraph.find(id)))
-    }
-
-    fn node_total_cost(&mut self, node: &L) -> Vec<CandidateExpr<CF, L>> {
-        let eg = &self.egraph;
-        assert!(self.has_all_costs(node));
-
-        let mut indices: IndexMap<Id, usize> =
-            IndexMap::from_iter(node.children().iter().map(|i| (*i, 0usize)));
-
-        let index_maxes = node
-            .children()
-            .iter()
-            .map(|id| self.costs[&eg.find(*id)].len())
-            .collect::<Vec<_>>();
-
-        let mut all_costs = Vec::new();
-
-        loop {
-            let costs = &self.costs;
-            let cost_f = |id| costs[&eg.find(id)][indices[&id]].cost.clone();
-
-            if indices.is_empty() {
-                all_costs.push(CandidateExpr {
-                    cost: self.cost_function.cost(node, cost_f),
-                    node: node.clone(),
-                    children: HashMap::new(),
-                });
-                return all_costs;
-            }
-
-            let mut all_children = HashMap::new();
-            for id in node.children() {
-                let actual_child = &costs[&eg.find(*id)][indices[id]];
-                all_children.insert(*id, actual_child.node.clone());
-                all_children.extend(actual_child.children.clone());
-            }
-
-            let cost = self.cost_function.cost(node, cost_f);
-            all_costs.push(CandidateExpr {
-                cost,
-                node: node.clone(),
-                children: all_children,
-            });
-
-            if let Some(idxs) = next_permutation(indices, &index_maxes) {
-                indices = idxs;
-            } else {
-                break;
-            }
-        }
-
-        all_costs
-    }
-
-    fn find_costs(&mut self) {
-        let mut computed = HashSet::new();
-
-        let mut did_something = true;
-        while did_something {
-            did_something = false;
-
-            for class in self.egraph.classes() {
-                if computed.contains(&class.id) || !class.iter().all(|x| self.has_all_costs(x)) {
-                    continue;
-                }
-                computed.insert(class.id);
-                let pass = self.make_pass(class);
-                self.costs.insert(class.id, pass);
-                did_something = true;
-            }
-        }
-    }
-
-    fn make_pass(&mut self, eclass: &EClass<L, N::Data>) -> Vec<CandidateExpr<CF, L>> {
-        eclass
-            .iter()
-            .flat_map(|node| self.node_total_cost(node))
-            .collect()
-    }
-}
-
-fn next_permutation(
-    mut indices: IndexMap<Id, usize>,
-    maxes: &[usize],
-) -> Option<IndexMap<Id, usize>> {
-    assert!(!indices.is_empty());
-    let mut i = indices.len() - 1;
-
-    loop {
-        indices[i] += 1;
-        if indices[i] >= maxes[i] {
-            indices[i] = 0;
-            if i == 0 {
-                return None;
-            }
-            i -= 1;
-        } else {
-            return Some(indices);
-        }
-    }
-}
 
 pub type Solution = HashMap<Id, usize>;
 
@@ -194,9 +14,8 @@ pub struct GeneticAlgorithmExtractor<'a, CF: CostFunction<L>, L: Language, N: An
     egraph: &'a EGraph<L, N>,
     eclass_bounds: HashMap<Id, usize>,
     rng: ThreadRng,
-    selection_cutoff: usize,
     mutation_dist: Bernoulli,
-    selection_dist: WeightedIndex<usize>,
+    selection_dist: WeightedIndex<f64>,
 }
 
 impl<'a, CF, L, N> GeneticAlgorithmExtractor<'a, CF, L, N>
@@ -207,8 +26,8 @@ where
     N: Analysis<L>,
 {
     const POPULATION_SIZE: usize = 100;
-    const MAX_GENERATIONS: usize = 10;
-    const SELECTION_COUNT: f64 = 0.15;
+    const MAX_GENERATIONS: usize = 20;
+    // const SELECTION_COUNT: f64 = 0.15;
     const MUTATION_RATE: f64 = 0.05;
     const CONVERGENCE_GENERATIONS: usize = 5;
 
@@ -218,15 +37,23 @@ where
             .map(|c| (c.id, egraph[c.id].nodes.len()))
             .collect();
 
-        let selection_cutoff =
-            ((Self::POPULATION_SIZE as f64) * Self::SELECTION_COUNT).round() as usize;
+        // let selection_cutoff =
+        //     ((Self::POPULATION_SIZE as f64) * Self::SELECTION_COUNT).round() as usize;
 
         log::debug!(
             "eclass IDs: {:?}",
             egraph.classes().map(|c| c.id).collect::<Vec<_>>()
         );
 
-        let weights = (1..=selection_cutoff).rev().collect::<Vec<_>>();
+        let w: f64 = 0.9;
+        let total: f64 = (1..=Self::POPULATION_SIZE)
+            .map(|i| w.powf((Self::POPULATION_SIZE - i) as f64))
+            .sum();
+        let weights = (1..=Self::POPULATION_SIZE)
+            .map(|i| w.powf((Self::POPULATION_SIZE - i) as f64) / total)
+            .rev()
+            .collect::<Vec<_>>();
+
         let selection_dist = WeightedIndex::new(&weights).expect("Selection dist creation failed");
         let mutation_dist = Bernoulli::new(Self::MUTATION_RATE).expect("Bernoulli creation failed");
 
@@ -235,7 +62,6 @@ where
             cost_function,
             eclass_bounds,
             rng: rand::rng(),
-            selection_cutoff,
             mutation_dist,
             selection_dist,
         }
@@ -281,15 +107,12 @@ where
                 log::info!("Found better cost: {}", best_cost)
             }
 
-            let fittest: Vec<_> = costs[..self.selection_cutoff]
-                .iter()
-                .map(|x| &population[x.0])
-                .collect();
+            let ranked: Vec<_> = costs.iter().map(|x| &population[x.0]).collect();
             let mut next_population = Vec::new();
 
             while next_population.len() < Self::POPULATION_SIZE {
-                let parent1 = fittest[self.selection_dist.sample(&mut self.rng)];
-                let parent2 = fittest[self.selection_dist.sample(&mut self.rng)];
+                let parent1 = ranked[self.selection_dist.sample(&mut self.rng)];
+                let parent2 = ranked[self.selection_dist.sample(&mut self.rng)];
                 let (mut child1, mut child2) = self.crossover(parent1, parent2);
                 self.mutate(&mut child1);
                 self.mutate(&mut child2);

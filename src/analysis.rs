@@ -26,7 +26,6 @@ pub struct MatrixData {
     pub dim: MatrixDim,
     pub canonical_value: Option<MatrixValue>,
     pub const_value: Option<MatrixValue>,
-    pub diagonal: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -96,7 +95,6 @@ impl Analysis<Linalg> for LinalgAnalysis {
                     dim: val.dim(),
                     canonical_value: Some(val.clone()),
                     const_value: (a.as_str() != MODEL_INPUT).then(|| val.clone()),
-                    diagonal: false,
                 })
             }
             Linalg::Add([a, b]) => {
@@ -108,10 +106,9 @@ impl Analysis<Linalg> for LinalgAnalysis {
                     dim: a.dim,
                     canonical_value,
                     const_value: None,
-                    diagonal: a.diagonal && b.diagonal,
                 })
             }
-            Linalg::Mul([a, b]) => {
+            Linalg::Mul([a, b]) | Linalg::DiagMul([a, b]) => {
                 let a = data(a).unwrap_mat();
                 let b = data(b).unwrap_mat();
 
@@ -121,7 +118,6 @@ impl Analysis<Linalg> for LinalgAnalysis {
                     dim: MatrixDim::new(a.dim.rows(), b.dim.cols()),
                     canonical_value,
                     const_value: None,
-                    diagonal: a.diagonal && b.diagonal,
                 })
             }
             Linalg::SvdU([a, k]) => {
@@ -136,7 +132,6 @@ impl Analysis<Linalg> for LinalgAnalysis {
                         .const_value
                         .as_ref()
                         .map(|a| MatrixValue::new(a.svd().0.clone().slice_move(s![.., ..k]))),
-                    diagonal: false,
                 })
             }
             Linalg::SvdD([a, k]) => {
@@ -146,11 +141,7 @@ impl Analysis<Linalg> for LinalgAnalysis {
                 AnalysisData::Mat(MatrixData {
                     dim: MatrixDim::new(k, k),
                     canonical_value: None,
-                    // const_value: None,
-                    const_value: a.const_value.as_ref().map(|a| {
-                        MatrixValue::new(Array2::from_diag(&a.svd().1.slice(s![..k])).into())
-                    }),
-                    diagonal: true,
+                    const_value: None,
                 })
             }
             Linalg::SvdVt([a, k]) => {
@@ -165,7 +156,6 @@ impl Analysis<Linalg> for LinalgAnalysis {
                         .const_value
                         .as_ref()
                         .map(|a| MatrixValue::new(a.svd().2.clone().slice_move(s![..k, ..]))),
-                    diagonal: false,
                 })
             }
             Linalg::Relu(a) => {
@@ -176,7 +166,6 @@ impl Analysis<Linalg> for LinalgAnalysis {
                     dim: a.dim,
                     canonical_value,
                     const_value: None,
-                    diagonal: a.diagonal,
                 })
             }
             Linalg::Softmax(a) => {
@@ -187,7 +176,6 @@ impl Analysis<Linalg> for LinalgAnalysis {
                     dim: a.dim,
                     canonical_value,
                     const_value: None,
-                    diagonal: false,
                 })
             }
             Linalg::Tanh(a) => {
@@ -198,7 +186,6 @@ impl Analysis<Linalg> for LinalgAnalysis {
                     dim: a.dim,
                     canonical_value,
                     const_value: None,
-                    diagonal: false,
                 })
             }
         }

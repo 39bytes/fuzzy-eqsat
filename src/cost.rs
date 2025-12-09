@@ -208,12 +208,19 @@ impl<'a> CostFunction<Linalg> for LinalgCost<'a> {
 
                 let a_cost = costs(*a);
                 let b_cost = costs(*b);
-                let op_cost = if data(a).unwrap_mat().diagonal {
-                    b_dim.rows() * b_dim.cols()
-                } else {
-                    let zeroes = count_zeroes(&a_cost.val);
-                    (a_dim.rows() * a_dim.cols() - zeroes) * b_dim.cols()
-                };
+                let zeroes = count_zeroes(&a_cost.val);
+                let op_cost = (a_dim.rows() * a_dim.cols() - zeroes) * b_dim.cols();
+
+                let res = a_cost.val.dot(&b_cost.val).to_shared();
+
+                self.fold_costs(enode, res, op_cost, &[a_cost, b_cost])
+            }
+            Linalg::DiagMul([a, b]) => {
+                let b_dim = data(b).unwrap_mat().dim;
+
+                let a_cost = costs(*a);
+                let b_cost = costs(*b);
+                let op_cost = b_dim.rows() * b_dim.cols();
 
                 let res = a_cost.val.dot(&b_cost.val).to_shared();
 

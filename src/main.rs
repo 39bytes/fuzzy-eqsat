@@ -121,7 +121,7 @@ impl Applier<Linalg, LinalgAnalysis> for SvdApplier {
             let vt_node = egraph.add(Linalg::SvdVt([a, k_node]));
 
             let vtb = egraph.add(Linalg::Mul([vt_node, b]));
-            let dvtb = egraph.add(Linalg::Mul([d_node, vtb]));
+            let dvtb = egraph.add(Linalg::DiagMul([d_node, vtb]));
             let udvtb = egraph.add(Linalg::Mul([u_node, dvtb]));
 
             if egraph.union(eclass, udvtb) {
@@ -358,10 +358,17 @@ fn run_experiment(
 ) -> Result<()> {
     let (var_info, expr, test_set_labels) =
         model_to_egg(model_path, test_set_path, test_set_dim, normalize)?;
-    let errs = [0.01, 0.02, 0.05, 0.10, 0.25];
+    // let errs = [0.01, 0.02, 0.05, 0.10, 0.25];
+    // let rewrite_combs = [
+    //     (Some(1), None),
+    //     (None, Some((-3, 0))),
+    //     (Some(1), Some((-3, 0))),
+    // ];
+
+    let errs = [0.25];
     let rewrite_combs = [
-        (Some(1), None),
-        (None, Some((-3, 0))),
+        // (Some(1), None),
+        // (None, Some((-3, 0))),
         (Some(1), Some((-3, 0))),
     ];
 
@@ -384,7 +391,7 @@ fn run_experiment(
             );
             let experiment_dir = experiment_dir.join(&exp_name);
             fs::create_dir_all(&experiment_dir)?;
-            let result = (0..3)
+            let result = (0..1)
                 .map(|_| {
                     log::info!("Running experiment {}", exp_name);
                     optimize(

@@ -13,8 +13,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     analysis::{LinalgAnalysis, MODEL_INPUT},
-    cost::LinalgCost,
-    extract::{self, CandidateExpr},
+    extract,
     lang::Linalg,
     matrix::MatrixValue,
 };
@@ -104,11 +103,14 @@ pub fn load_test_set(filename: &str, shape: (usize, usize), normalize: bool) -> 
 fn into_python(expr: &RecExpr<Linalg>) -> String {
     fn rec(expr: &RecExpr<Linalg>, cur: Id) -> String {
         match &expr[cur] {
-            Linalg::Add([a, b]) => format!("{} + {}", rec(expr, *a), rec(expr, *b)),
-            Linalg::Mul([a, b]) => format!("{} @ {}", rec(expr, *a), rec(expr, *b)),
+            Linalg::Add([a, b]) => format!("np.add({},{})", rec(expr, *a), rec(expr, *b)),
+            Linalg::Mul([a, b]) => format!("np.dot({},{})", rec(expr, *a), rec(expr, *b)),
+            Linalg::DiagMul([a, b]) => {
+                format!("np.multiply({}[:, None], {})", rec(expr, *b), rec(expr, *a))
+            }
             Linalg::SvdU([_, _]) | Linalg::SvdD([_, _]) | Linalg::SvdVt([_, _]) => {
                 format!(
-                    "param(\"{}\")",
+                    "param(\'{}\')",
                     expr[cur].build_recexpr(|id| expr[id].clone())
                 )
             }
@@ -120,7 +122,7 @@ fn into_python(expr: &RecExpr<Linalg>) -> String {
                 if sym.as_str() == "x" {
                     "x".into()
                 } else {
-                    format!("param(\"{}\")", sym)
+                    format!("param(\'{}\')", sym)
                 }
             }
         }
@@ -156,7 +158,7 @@ fn gather_params(
 ) -> HashMap<String, Parameter> {
     let node = &egraph[id].nodes[sol[&id]];
     match node {
-        Linalg::Add([a, b]) | Linalg::Mul([a, b]) => {
+        Linalg::Add([a, b]) | Linalg::Mul([a, b]) | Linalg::DiagMul([a, b]) => {
             let mut m1 = gather_params(*a, sol, egraph, var_info);
             m1.extend(gather_params(*b, sol, egraph, var_info));
             m1
@@ -187,8 +189,14 @@ fn gather_params(
             let a = egraph[*a].data.unwrap_mat();
             let k = egraph[*k].data.unwrap_num() as usize;
 
-            let trunc =
-                Array2::from_diag(&a.canonical_value.clone().unwrap().svd().1.slice(s![..k]));
+            let trunc = a
+                .canonical_value
+                .clone()
+                .unwrap()
+                .svd()
+                .1
+                .clone()
+                .slice_move(s![..k]);
 
             HashMap::from([(
                 make_recexpr(node, sol, egraph).to_string(),

@@ -74,6 +74,7 @@ where
         to_pareto_point: impl Fn(&CF::Cost) -> (f64, f64),
     ) -> (CF::Cost, Option<Solution>, Vec<(f64, f64)>) {
         let mut generation = 0;
+        let mut generations_since_improvement = 0;
 
         let mut best_cost = self.cost_function.cost_rec(&orig);
         let mut best_sol: Option<Solution> = None;
@@ -104,7 +105,17 @@ where
             if costs[0].1 < best_cost {
                 best_sol = Some(population[costs[0].0].clone());
                 best_cost = costs[0].1.clone();
-                log::info!("Found better cost: {}", best_cost)
+                generations_since_improvement = 0;
+                log::info!("Found better cost: {}", best_cost);
+            } else {
+                generations_since_improvement += 1;
+                if generations_since_improvement > Self::CONVERGENCE_GENERATIONS {
+                    log::info!(
+                        "Haven't found better solution in {} generations, stopping",
+                        Self::CONVERGENCE_GENERATIONS,
+                    );
+                    break;
+                }
             }
 
             let ranked: Vec<_> = costs.iter().map(|x| &population[x.0]).collect();

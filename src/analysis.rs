@@ -134,8 +134,7 @@ impl Analysis<Linalg> for LinalgAnalysis {
                         .map(|a| MatrixValue::new(a.svd().0.clone().slice_move(s![.., ..k]))),
                 })
             }
-            Linalg::SvdD([a, k]) => {
-                let a = data(a).unwrap_mat();
+            Linalg::SvdD([_, k]) => {
                 let k = data(k).unwrap_num() as usize;
 
                 AnalysisData::Mat(MatrixData {

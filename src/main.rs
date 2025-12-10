@@ -1,8 +1,7 @@
 use anyhow::Result;
 use csv::Writer;
 use log::{debug, info};
-use ndarray::{Array1, Array2, Axis};
-use ndarray_stats::QuantileExt;
+use ndarray::{Array1, Array2};
 use serde::Serialize;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -15,14 +14,12 @@ use egg::*;
 use std::time::Instant;
 
 use crate::analysis::{AnalysisData, MODEL_INPUT, MatrixData};
-use crate::cost::{CostWithErrorBound, LinalgCost};
+use crate::cost::LinalgCost;
 use crate::extract::GeneticAlgorithmExtractor;
 use crate::lang::Linalg;
 use crate::math::{accuracy, prune};
 use crate::matrix::MatrixValue;
-use crate::model::{
-    Activation, ModelLayer, TestSet, load_model, load_test_set, output_python_file,
-};
+use crate::model::{Activation, ModelLayer, load_model, load_test_set, output_python_file};
 use crate::plot::output_pareto;
 
 mod analysis;
@@ -128,7 +125,7 @@ impl Applier<Linalg, LinalgAnalysis> for SvdApplier {
                 changed.push(udvtb);
             }
 
-            k -= 20;
+            k -= step;
         }
 
         changed
@@ -136,7 +133,6 @@ impl Applier<Linalg, LinalgAnalysis> for SvdApplier {
 }
 
 struct PruneApplier {
-    a: Var,
     prune_low: i32,
     prune_high: i32,
 }
@@ -146,12 +142,10 @@ impl Applier<Linalg, LinalgAnalysis> for PruneApplier {
         &self,
         egraph: &mut EGraph<Linalg, LinalgAnalysis>,
         eclass: Id,
-        subst: &Subst,
+        _: &Subst,
         _: Option<&PatternAst<Linalg>>,
         _: Symbol,
     ) -> Vec<Id> {
-        let a = subst[self.a];
-
         if egraph.analysis.pruned_eclasses.contains(&eclass) {
             return vec![];
         }
@@ -211,7 +205,6 @@ fn make_rules(params: RewriteParameters) -> Vec<Rewrite<Linalg, LinalgAnalysis>>
     if let Some((prune_low, prune_high)) = params.prune_range {
         rules.push(rewrite!("prune"; "?a" => {
             PruneApplier {
-                a: "?a".parse().unwrap(),
                 prune_low,
                 prune_high,
             }
@@ -251,6 +244,7 @@ fn model_to_egg(
 struct Metrics {
     title: String,
     eclass_count: usize,
+    generation: usize,
     extraction_time: u128,
     optimized_cost: usize,
     optimized_rel_error: f64,
@@ -315,9 +309,10 @@ fn optimize(
 
     let mut extractor = GeneticAlgorithmExtractor::new(&runner.egraph, cf);
     let root = runner.roots[0];
-    let (best, best_sol, pareto_points) = extractor.find_best(root, expr.clone(), |c| {
-        (c.error.unwrap(), (c.cost / test_set_labels.len()) as f64)
-    });
+    let (best, best_sol, pareto_points, generation) =
+        extractor.find_best(root, expr.clone(), |c| {
+            (c.error.unwrap(), (c.cost / test_set_labels.len()) as f64)
+        });
     let extraction_time = before.elapsed().as_millis();
     info!("Extraction took: {}ms", extraction_time);
 
@@ -335,6 +330,7 @@ fn optimize(
         metrics: Metrics {
             title,
             eclass_count,
+            generation,
             extraction_time,
             optimized_cost,
             optimized_rel_error,
@@ -358,17 +354,10 @@ fn run_experiment(
 ) -> Result<()> {
     let (var_info, expr, test_set_labels) =
         model_to_egg(model_path, test_set_path, test_set_dim, normalize)?;
-    // let errs = [0.01, 0.02, 0.05, 0.10, 0.25];
-    // let rewrite_combs = [
-    //     (Some(1), None),
-    //     (None, Some((-3, 0))),
-    //     (Some(1), Some((-3, 0))),
-    // ];
-
-    let errs = [0.25];
+    let errs = [0.02, 0.05, 0.10, 0.25];
     let rewrite_combs = [
-        // (Some(1), None),
-        // (None, Some((-3, 0))),
+        (Some(1), None),
+        (None, Some((-3, 0))),
         (Some(1), Some((-3, 0))),
     ];
 
@@ -391,7 +380,7 @@ fn run_experiment(
             );
             let experiment_dir = experiment_dir.join(&exp_name);
             fs::create_dir_all(&experiment_dir)?;
-            let result = (0..1)
+            let result = (0..3)
                 .map(|_| {
                     log::info!("Running experiment {}", exp_name);
                     optimize(
@@ -447,6 +436,14 @@ fn main() -> Result<()> {
     //         prune_range,
     //     },
     // )
+
+    run_experiment(
+        "mlp",
+        "mnist_model_params.json",
+        "mnist_test_set.json",
+        (10000, 784),
+        true,
+    )?;
 
     run_experiment(
         "lenet",

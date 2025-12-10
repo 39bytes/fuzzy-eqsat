@@ -2,6 +2,7 @@ use std::{fmt::Display, path::Path};
 
 use egg::*;
 
+#[allow(dead_code)]
 pub fn render_egraph<L: Language + Display, N: Analysis<L>>(
     egraph: &EGraph<L, N>,
     dir: &str,

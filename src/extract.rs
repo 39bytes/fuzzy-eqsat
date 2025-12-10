@@ -26,8 +26,7 @@ where
     N: Analysis<L>,
 {
     const POPULATION_SIZE: usize = 100;
-    const MAX_GENERATIONS: usize = 20;
-    // const SELECTION_COUNT: f64 = 0.15;
+    const MAX_GENERATIONS: usize = 25;
     const MUTATION_RATE: f64 = 0.05;
     const CONVERGENCE_GENERATIONS: usize = 5;
 
@@ -36,9 +35,6 @@ where
             .classes()
             .map(|c| (c.id, egraph[c.id].nodes.len()))
             .collect();
-
-        // let selection_cutoff =
-        //     ((Self::POPULATION_SIZE as f64) * Self::SELECTION_COUNT).round() as usize;
 
         log::debug!(
             "eclass IDs: {:?}",
@@ -72,7 +68,7 @@ where
         root: Id,
         orig: RecExpr<L>,
         to_pareto_point: impl Fn(&CF::Cost) -> (f64, f64),
-    ) -> (CF::Cost, Option<Solution>, Vec<(f64, f64)>) {
+    ) -> (CF::Cost, Option<Solution>, Vec<(f64, f64)>, usize) {
         let mut generation = 0;
         let mut generations_since_improvement = 0;
 
@@ -136,7 +132,7 @@ where
             generation += 1;
         }
 
-        (best_cost, best_sol, pareto_points)
+        (best_cost, best_sol, pareto_points, generation)
     }
 
     fn crossover(&mut self, a: &Solution, b: &Solution) -> (Solution, Solution) {

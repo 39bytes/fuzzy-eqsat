@@ -1,6 +1,7 @@
 /target
 *.py
 *.json
+!pareto_points.json
 *.png
 *.svg
 *.dot

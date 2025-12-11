@@ -175,22 +175,6 @@ a set of *rewrite rules*.
 For example, we might have a rewrite rule that replaces division by 2 by a bitshift:
 $ x / 2 -> x << 1 $
 
-Equality saturation works by repeatedly applying these rewrite rules until:
-1. The graph is saturated (applying further rewrites would not result in any changes)
-2. A timeout is reached
-
-Note that a saturated e-graph represents all possible equivalent expressions reachable from the initial expression
-using the given rewrite rules.
-
-Then, the best possible expression can be extracted from the e-graph according a specific *cost function* which outputs
-a cost value given an e-node. However, the extraction problem is known to be NP-Hard #cite(<stepp2011>), as such
-computing an exact solution is intractable for large e-graphs.
-
-Common solutions are a simple bottom-up greedy approximation algorithm #cite(<2021-egg>) which takes the minimum cost e-node from each
-e-class, and integer linear programming #cite(<ilpextract1>) #cite(<ilpextract2>) which computes an exact solution, but can be very slow on large e-graphs.
-
-Neither of these approaches are compatible with the cost model used in this paper, so we employ a genetic algorithm to tackle the extraction problem for ease of implementation.
-
 #let eclass(enclose, name: none) = {
   node(
     enclose: enclose,
@@ -225,6 +209,22 @@ Neither of these approaches are compatible with the cost model used in this pape
   ),
   caption: [E-graph for the expression $x/2 + 1$ with the rewrite $x/2 -> x << 1$ applied. Dotted boxes represent e-classes, and circles represent e-nodes.],
 )
+
+Equality saturation works by repeatedly applying these rewrite rules until:
+1. The graph is saturated (applying further rewrites would not result in any changes)
+2. A timeout is reached
+
+Note that a saturated e-graph represents all possible equivalent expressions reachable from the initial expression
+using the given rewrite rules.
+
+Then, the best possible expression can be extracted from the e-graph according a specific *cost function* which outputs
+a cost value given an e-node. However, the extraction problem is known to be NP-Hard #cite(<stepp2011>), as such
+computing an exact solution is intractable for large e-graphs.
+
+Common solutions are a simple bottom-up greedy approximation algorithm #cite(<2021-egg>) which takes the minimum cost e-node from each
+e-class, and integer linear programming #cite(<ilpextract1>) #cite(<ilpextract2>) which computes an exact solution, but can be very slow on large e-graphs.
+
+Neither of these approaches are compatible with the cost model used in this paper, so we employ a genetic algorithm to tackle the extraction problem for ease of implementation.
 
 
 == Genetic algorithms
@@ -500,7 +500,7 @@ $ eta = (||A - A'||_F)/(||A||_F) $
 
 The cost function itself can be configured by passing a maximum allowed relative error $E_max$. The ordering between costs
 is in part determined using this value.
-Specifically, $C_a$ and $C_b$ be the integer cost values for enodes $a$ and $b$, and $E_a$ and $E_b$ be their respective errors.
+Specifically, let $C_a$ and $C_b$ be the integer cost values for enodes $a$ and $b$, and $E_a$ and $E_b$ be their respective errors.
 An ordering for the costs of $a$ and $b$ are determined as follows:
 - If $E_a$ > $E_max$ and $E_b > E_max$ then compare by $E_a$ and $E_b$
 - Otherwise if only one of $E_a$ or $E_b$ exceed $E_max$ then the one that does not exceed $E_max$ is smaller.
@@ -761,7 +761,7 @@ The experiments were run on a Lenovo Thinkbook G16 with a AMD Ryzen 7 8845H, run
 )
 
 #figure(
-  placement: bottom,
+  placement: top,
   scope: "parent",
   results-table(
     results-lenet-2,
@@ -827,19 +827,19 @@ This makes sense because LeNet-5 is a convolutional model and has fewer paramete
 so each neuron activation "represents" more information.
 
 Combining the two rewrites for LeNet-5 is noticeably less effective compared to the MLP, resulting only in a 4-5% cost reduction. Indeed,
-@fig:solution-plots b) shows that the pareto fronts for truncated SVD and truncated SVD + pruning are very close together, unlike the MLP case where there
+@fig:solution-plots b) shows that the Pareto fronts for truncated SVD and truncated SVD + pruning are very close together, unlike the MLP case where there
 is a sizable gap.
 
 In all cases, it is evident that going past 10% error results in diminishing returns in terms of cost reduction. This can be seen in @fig:solution-plots b),
-the pareto front has a very steep downwards slope up to 10% error before flattening out quickly.
+the Pareto front has a very steep downwards slope up to 10% error before flattening out quickly.
 The MLP does not seem to hit these diminishing returns until around 40% error.
 
 The scatter plot for the LeNet-5 case is significantly denser than the MLP plot, this is because the solution space is much larger
 and thus more generations are required for convergence.
 
 There is a clear pattern of vertical lines in both figures when only applying the truncated SVD rewrite (the blue points).
-These are likely solutions where a small matrix is heavily truncated which heavily influences the output while
-not reducing cost very much, which is combined with various truncations of a larger matrix, leading to this "vertical line" pattern.
+These are likely solutions where a small matrix is heavily truncated which strongly impacts the output while
+not resulting a large cost decrease.
 
 = Limitations
 
@@ -874,7 +874,7 @@ trace of it in the literature, likely due to challenges already discussed.
 There has been a fair amount of research devoted to tackling the e-graph extraction problem.
 Chen et al. #cite(<emorphic>) propose a solution based on simulated annealing with solution space pruning which achieves
 impressive results on large e-graphs for hardware synthesis. Rui et al. #cite(<esaco>) take a similar approach also
-based on simulated annealing but combined with ant colony optimization.
+based on simulated annealing, but combined with ant colony optimization.
 
 Cai et al. #cite(<smoothe>) formulate the e-graph problem probabilistically, converting the discrete optimization problem into a continuous
 differentiable form and applying gradient descent.

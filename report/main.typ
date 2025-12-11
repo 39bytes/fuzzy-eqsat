@@ -1,11 +1,20 @@
 #import "@preview/charged-ieee:0.1.4": ieee
 #import "@preview/cetz:0.4.2"
 #import "@preview/simplebnf:0.1.1": *
+#import "@preview/fletcher:0.5.8" as fletcher: diagram, edge, node
+#import fletcher.shapes: diamond
+
 
 #show: ieee.with(
   title: [fuzzy-eqsat: Equality saturation with approximations],
   abstract: [
-    #lorem(100)
+    We present `fuzzy-eqsat`, a novel form of equality saturation that employs approximate rewrite
+    rules to optimize programs at the cost of accuracy.
+    Namely, we introduce truncated singular value decomposition and matrix pruning rewrites in order to
+    speed up matrix multiplication.
+    This paper evalutes the efficacy of the approach on two basic neural network classifiers for handwritten
+    digit classification using the MNIST dataset.
+    The experiments show large theoretical speedups for only a slight accuracy penalty.
   ],
   authors: (
     (
@@ -14,7 +23,6 @@
       location: [Montreal, Canada],
     ),
   ),
-  // index-terms: ("Scientific writing", "Typesetting", "Document creation", "Syntax"),
   bibliography: bibliography("refs.bib"),
   figure-supplement: [Fig.],
 )
@@ -152,7 +160,7 @@ example of this is the `-ffast-math` flag in GCC #cite(<gcc-ffast-math>), which 
 the compiler to make many assumptions that do not respect the IEEE standard.
 
 The approach explored in this paper requires that values in the expression being optimized
-are known ahead of time, which is highly restrictive. Nevertheless, this remains applicable for optimizing
+are known ahead of time, which is highly restrictive. Nevertheless, we explore its applicability to the task of optimizing
 neural network inference, as the model parameters are all known after training is complete.
 
 = Background
@@ -178,10 +186,45 @@ Then, the best possible expression can be extracted from the e-graph according a
 a cost value given an e-node. However, the extraction problem is known to be NP-Hard #cite(<stepp2011>), as such
 computing an exact solution is intractable for large e-graphs.
 
-Common solutions are greedy approximation algorithm (taking the minimum cost e-node from each
-e-class) and integer linear programming (computes an exact solution, but can be slow).
+Common solutions are a simple bottom-up greedy approximation algorithm #cite(<2021-egg>) which takes the minimum cost e-node from each
+e-class, and integer linear programming #cite(<ilpextract1>) #cite(<ilpextract2>) which computes an exact solution, but can be very slow on large e-graphs.
 
-Due to the constraints of the cost model chosen in this paper, a genetic algorithm was used for extraction.
+Neither of these approaches are compatible with the cost model used in this paper, so we employ a genetic algorithm to tackle the extraction problem for ease of implementation.
+
+#let eclass(enclose, name: none) = {
+  node(
+    enclose: enclose,
+    stroke: (paint: gray, thickness: 1pt, dash: "dashed"),
+    corner-radius: 5pt,
+    snap: -1, // prioritise other nodes when auto-snapping
+    name: name,
+  )
+}
+
+#figure(
+  diagram(
+    node-stroke: 0.6pt,
+    node-fill: white,
+    node((1, 0), [$slash$], name: <div>, radius: 4mm),
+    node((1.75, 0), [$>>$], name: <bitshift>, radius: 4mm),
+    eclass((<div>, <bitshift>), name: <div-eclass>),
+    node((1.75, -1), [$+$], name: <plus>, radius: 4mm),
+    eclass((<plus>), name: <root-eclass>),
+    node((0.5, 1), [$x$], name: <x>, radius: 4mm),
+    eclass((<x>), name: <x-eclass>),
+    node((1.5, 1), [$2$], name: <two>, radius: 4mm),
+    eclass((<two>), name: <two-eclass>),
+    node((2.5, 1), [$1$], name: <one>, radius: 4mm),
+    eclass((<one>), name: <one-eclass>),
+    edge(<div>, <x-eclass>, "->"),
+    edge(<div>, <two-eclass>, "->"),
+    edge(<bitshift>, <one-eclass>, "->"),
+    edge(<bitshift>, <x-eclass>, "->"),
+    edge(<plus>, <div-eclass>, "->"),
+    edge(<plus>, <one-eclass>, "->", bend: 20deg),
+  ),
+  caption: [E-graph for the expression $x/2 + 1$ with the rewrite $x/2 -> x << 1$ applied. Dotted boxes represent e-classes, and circles represent e-nodes.],
+)
 
 
 == Genetic algorithms
@@ -199,12 +242,83 @@ Finally, random *mutation* is applied gene by gene in the new offspring to intro
 
 This process is repeated for some number of iterations, and the best solution is returned.
 
+#let blob(pos, label, tint: white, ..args) = node(
+  pos,
+  align(center, label),
+  width: 28mm,
+  fill: tint.lighten(60%),
+  stroke: 1pt + tint.darken(20%),
+  corner-radius: 5pt,
+  ..args,
+)
+
+#set text(10pt)
+#figure(
+  diagram(
+    spacing: 8pt,
+    cell-size: (8mm, 10mm),
+    edge-stroke: 1pt,
+    edge-corner-radius: 5pt,
+    mark-scale: 70%,
+    edge(
+      (0, 0),
+      "d",
+      "-|>",
+      `Initial population`,
+      label-pos: 0,
+      label-side: center,
+    ),
+    blob((0, 1), `Evaluate`),
+    edge("-|>"),
+    node(
+      (0, 2),
+      align(center)[`Done?`],
+      width: 22mm,
+      shape: diamond,
+      stroke: 1pt + gray.darken(20%),
+    ),
+    edge((0, 2), (0, 4), "--|>", `No`),
+    edge((0, 2), (2, 2), "--|>", `Yes`),
+    blob(
+      (2, 2),
+      `Output best`,
+    ),
+    node(
+      (0, 4),
+      align(center)[`Next population full?`],
+      width: 22mm,
+      shape: diamond,
+      stroke: 1pt + gray.darken(20%),
+    ),
+    edge((0, 4), (2, 4), `No`, "--|>"),
+    edge((0, 4), "l,uuu,r", `Yes`, "--|>", label-side: left),
+    blob(
+      (2, 4),
+      `Select parents`,
+    ),
+    edge((2, 4), (2, 5), "-|>"),
+    blob((2, 5), `Crossover`),
+    edge((2, 5), (2, 6), "-|>"),
+    blob((2, 6), `Mutate children`),
+    edge(
+      (2, 6),
+      "ll,uu",
+      `Add children`,
+      "-|>",
+      label-pos: 0.75,
+      label-side: left,
+    ),
+  ),
+  caption: [Genetic algorithm flowchart.],
+)
+
+
 = Methods <sec:methods>
 This approach to equality saturation comes with the restriction that all variable values in the expression are known
-ahead of time, since otherwise it is not possible to compute a relative error for approximations. The method was applied
-to the problem of neural network optimization for inference on two classification models.
+ahead of time, since otherwise it is not possible to compute a relative error for approximations. We use `fuzzy-eqsat` to
+optimize inference for two classification models.
 
-1. A simple multilayer perception with 1 hidden layer
+1. A simple multilayer perception with 1 hidden layer (784 x 100 x 10 neurons)
 2. LeNet 5 #cite(<lenet5>), one of the earliest convolutional neural networks
 
 Both of these models are trained on the task of handwritten digit recognition using the MNIST dataset #cite(<mnist>).
@@ -306,7 +420,7 @@ The grammar includes standard matrix addition and multiplication,
 This is faster to compute than normal matrix multiplication so it is discounted in the cost model.
 
 The `svd_u`, `svd_d` and `svd_vt` terms correspond to the $U_k, Sigma_k, V^T_k$ matrices of the truncated SVD respectively.
-`ReLU`, `tanh`, and `softmax` are the common activation functions applied columnwise to matrices.
+`ReLU`, `tanh`, and `softmax` are included since they are common activation functions, `ReLU` and `tanh` are applied element-wise, and `softmax` is applied column-wise to matrices.
 
 The network shown in @fig:nn matches the architecture of the first classification model tested, albeit with fewer
 neurons. In `egg`, which uses an s-expression syntax, this network corresponds to the expression:
@@ -318,23 +432,64 @@ $
 where $w_i$ and $b_i$ correspond to the weight matrix and bias vector for the $i$-th layer respectively,
 and $x$ corresponds to the model input.
 
-The model parameters are constants, but the model input evidently can't be known ahead of time. This can be resolved
+The model parameters are constants, but the model input evidently can't be known ahead of time. We resolve this
 by treating $x$ as a random variable which is defined by some distribution. The value assigned to $x$ is the test set matrix from
 the classification problem's data set, since this approximates the distribution of possible model inputs. This is functionally the same as
 batch inference.
 
 #figure(
-  image("svd_egraph.svg", width: 60%),
-  caption: [E-graph for the expression (\* a b) after applying the SVD rewrite],
+  diagram(
+    node-stroke: 0.6pt,
+    node-fill: white,
+    node((2.5, 0), [$*$], name: <mul1>, radius: 4mm),
+    node((3.25, 0), [$*$], name: <mul2>, radius: 4mm),
+    eclass((<mul1>, <mul2>), name: <root-eclass>),
+    eclass((<mul1>, <mul2>), name: <root-eclass>),
+    node((2, 2), [#text([svd_u], size: 7pt)], name: <svdu>, radius: 4mm),
+    eclass((<svdu>), name: <svdu-eclass>),
+    node((3, 2), [#text([svd_d], size: 7pt)], name: <svdd>, radius: 4mm),
+    eclass((<svdd>), name: <svdd-eclass>),
+    node((4, 2), [$*$], name: <mul3>, radius: 4mm),
+    eclass((<mul3>), name: <mul3-eclass>),
+    node((4, 3), [#text([svd_vt], size: 7pt)], name: <svdvt>, radius: 4mm),
+    eclass((<svdvt>), name: <svdvt-eclass>),
+    node((3, 3), [$a$], name: <a>, radius: 4mm),
+    eclass((<a>), name: <a-eclass>),
+    node((5, 3), [$b$], name: <b>, radius: 4mm),
+    eclass((<b>), name: <b-eclass>),
+    node((3, 4), [$5$], name: <five>, radius: 4mm),
+    eclass((<five>), name: <five-eclass>),
+    node(
+      (3, 1),
+      [#text([diag_mul], size: 5pt)],
+      name: <diagmul>,
+      radius: 4mm,
+    ),
+    eclass((<diagmul>), name: <diagmul-eclass>),
+    edge(<svdu>, <a-eclass>, "->"),
+    edge(<svdd>, <a-eclass>, "->"),
+    edge(<svdvt>, <a-eclass>, "->"),
+    edge(<diagmul>, <svdd-eclass>, "->"),
+    edge(<diagmul>, <mul3-eclass>, "->"),
+
+    edge(<mul1>, <svdu-eclass>, "->"),
+    edge(<mul1>, <diagmul-eclass>, "->"),
+    edge(<mul3>, <svdvt-eclass>, "->"),
+    edge(<mul3>, <b-eclass>, "->"),
+    edge(<svdu>, <five-eclass>, "->"),
+    edge(<svdd>, <five-eclass>, "->", bend: -60deg),
+    edge(<svdvt>, <five-eclass>, "->"),
+    edge(<mul2>, <a-eclass>, "->", bend: 30deg),
+    edge(<mul2>, <b-eclass>, "->", bend: 20deg),
+  ),
+  caption: [E-graph for the expression (\* a b) after applying the truncated SVD rewrite, with $k=5$],
 ) <fig:svd-egraph>
 
 == Cost model
 The cost model used differs from typical equality saturation in many ways.
 
-`egg` provides functionality to attach arbitrary data to eclasses during e-graph saturation via the `Analysis` trait.
-
-First, during the analysis phase, a _canonical_ expression value is computed for each eclass,
-which is derived from the variable values.
+`egg` provides functionality to attach arbitrary data to eclasses during e-graph saturation via the `Analysis` trait, we leverage this to
+compute a _canonical_ expression value is computed for each eclass, which is derived from the variable values.
 The root e-class's canonical value corresponds to the actual model output given the test set.
 
 The cost function implemented not only outputs an integer cost, but also the actual value of the e-node and its relative error
@@ -343,26 +498,14 @@ The relative error $eta$ between the canonical value $A$ and its approximation $
 
 $ eta = (||A - A'||_F)/(||A||_F) $
 
-The cost function itself can be configured by passing a maximum allowed relative error. The ordering between costs
+The cost function itself can be configured by passing a maximum allowed relative error $E_max$. The ordering between costs
 is in part determined using this value.
+Specifically, $C_a$ and $C_b$ be the integer cost values for enodes $a$ and $b$, and $E_a$ and $E_b$ be their respective errors.
+An ordering for the costs of $a$ and $b$ are determined as follows:
+- If $E_a$ > $E_max$ and $E_b > E_max$ then compare by $E_a$ and $E_b$
+- Otherwise if only one of $E_a$ or $E_b$ exceed $E_max$ then the one that does not exceed $E_max$ is smaller.
+- Otherwise compare by $C_a$ and $C_b$.
 
-#figure(
-  ```rust
-  impl PartialOrd for CostWithErrorBound {
-      fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-          if self.error > self.max_error && other.error > self.max_error {
-              self.error.partial_cmp(&other.error)
-          } else if self.error > self.max_error {
-              Some(Ordering::Greater)
-          } else if other.error > self.max_error {
-              Some(Ordering::Less)
-          } else {
-              self.cost.partial_cmp(&other.cost)
-          }
-      }
-  }
-  ```,
-)
 
 == Genetic algorithm implementation
 The e-graph extraction problem can be formulated as follows: Given an e-graph, pick
@@ -411,7 +554,8 @@ in order to minimize noise due to the randomness inherent to genetic algorithms.
 
 Note that in the case of LeNet 5, since the equality saturation includes no rewrites for
 convolutions, the expression being optimized is only the last three fully connected layers of the network,
-since those are the relevant parts that can be optimized.
+since those are the relevant parts that can be optimized. As such, the value used for the model input is
+the output of the original model's convolutional layers on the test set.
 
 The experiments were run on a Lenovo Thinkbook G16 with a AMD Ryzen 7 8845H, running Arch Linux 6.17.
 
@@ -708,10 +852,6 @@ Due to the unreliable nature of genetic algorithms, it is likely that the extrac
 and would require further tweaking of the parameters. The crossover method could also be improved
 to be aware of the structure of the e-graph rather than simply swapping contiguous slices ordered
 by e-class IDs.
-Also, the extraction is quite slow since it involves evaluating many large matrix multiplications.
-
-The cost model formulation could also be improved, the approach to e-node costs taken in this paper suffers
-from a sharp discontinuity when the
 
 Finally, the cost values of the optimized expressions is simply part of the model and may not actually be faster
 in practice. Full performance data was not collected, but when running a few tests comparing the runtime of a model that was optimized using the
@@ -748,7 +888,7 @@ model is rather unusual.
 This paper presents `fuzzy-eqsat` which introduces approximate rewrite rules to equality saturation, namely
 truncated SVD and matrix pruning for linear algebra expressions. Experimental results show
 large cost reductions on basic neural networks under the cost model used, though this does not lead to actual
-practical runtime improvement.
+runtime improvement in practice.
 
 For future work, it would be interesting to rethink the cost model so that better extraction methods
 could be used instead of genetic algorithms, improving reliability and scalability. Generalizing the truncated SVD rewrite to

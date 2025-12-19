@@ -505,7 +505,11 @@ since those are the relevant parts that can be optimized. Accordingly, the value
 the output of the original model's convolutional layers on the test set.
 
 The experiments were run on a Lenovo Thinkbook G16 with a AMD Ryzen 7 8845HS, running Arch Linux 6.17.
-Extraction time is not included as they were fairly consistent, but runs for the MLP took 15-30 seconds, while LeNet took 1-2 minutes.
+#show link: underline
+The source code can be found at #link("https://github.com/39bytes/fuzzy-eqsat").
+
+Extraction time is not included in the tables below as they were fairly consistent, but runs for the MLP took 15-30 seconds, while LeNet took 1-2 minutes.
+
 
 #place(
   top + center,

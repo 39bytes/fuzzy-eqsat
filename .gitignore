@@ -1,6 +1,6 @@
 /target
+experiments/
 *.py
-*.json
 !pareto_points.json
 *.png
 *.svg

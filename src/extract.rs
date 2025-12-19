@@ -95,7 +95,6 @@ where
 
             pareto_points.extend(costs.iter().map(|p| to_pareto_point(&p.1)));
 
-            // TODO: Optimize using heap
             costs.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
 
             if costs[0].1 < best_cost {

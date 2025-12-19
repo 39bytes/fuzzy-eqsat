@@ -1,2 +1,2 @@
 run:
-    RUST_LOG=none,egg_svd=info cargo run --release
+    RUST_LOG=none,fuzzy_eqsat=info cargo run --release

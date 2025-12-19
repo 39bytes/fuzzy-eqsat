@@ -231,15 +231,6 @@ fn model_to_egg(
     Ok((var_info, expr, test_set.labels))
 }
 
-// **Metrics**
-// - Number of EClasses
-// - Extraction time
-// - Pareto for explored solutions
-// - Cost
-// - Relative error
-// - Classification error
-// - Execution time ?
-
 #[derive(Serialize)]
 struct Metrics {
     title: String,
@@ -425,30 +416,18 @@ fn run_experiment(
 fn main() -> Result<()> {
     env_logger::init();
 
-    // optimize(
-    //     "test",
-    //     &expr,
-    //     var_info.clone(),
-    //     &test_set_labels,
-    //     err,
-    //     RewriteParameters {
-    //         svd_step_scale: svd_scale,
-    //         prune_range,
-    //     },
-    // )
-
     run_experiment(
         "mlp",
-        "mnist_model_params.json",
-        "mnist_test_set.json",
+        "models/mnist_model_params.json",
+        "models/mnist_test_set.json",
         (10000, 784),
         true,
     )?;
 
     run_experiment(
         "lenet",
-        "lenet_model_params.json",
-        "lenet_test_set.json",
+        "models/lenet_model_params.json",
+        "models/lenet_test_set.json",
         (10000, 400),
         false,
     )?;

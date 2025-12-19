@@ -284,7 +284,7 @@ SVD instead, the total cost is
 
 $k n p + k p + k m p$ can be much smaller than $m n p$ if $k$ is sufficiently small.
 In the rewrite implementation, the truncated SVD for several $k$ are inserted in a linearly decreasing manner.
-The step size is equal to $floor(log_2(min(m, n)))$. For example, for a $784 times 100$ matrix, $floor(log_2(min(784, 100))) = 6$, thus
+The step size is equal to $floor(log_2(min(m, n)))$. For example, for a $784 times 100$ matrix, $floor(log_2(min(784, 100))) = 6$, so
 the truncated SVDs for $k = 94, 88, 82, ...$ are merged into the node's eclass. An example of an e-graph with this rewrite applied is shown in @fig:svd-egraph.
 
 === *Pruning*
@@ -320,7 +320,7 @@ is in part determined using this value.
 Specifically, let $C_a$ and $C_b$ be the integer cost values for enodes $a$ and $b$, and $eta_a$ and $eta_b$ be their respective errors.
 An ordering for the costs of $a$ and $b$ are determined as follows:
 - If $eta_a$ > $eta_max$ and $eta_b > eta_max$ then compare by $eta_a$ and $eta_b$.
-- Otherwise if only one of $eta_a$ or $eta_b$ exceed $eta_max$ then the one that does not exceed $eta_max$ is smaller.
+- If only one of $eta_a$ or $eta_b$ exceed $eta_max$, then the one that does not exceed $eta_max$ is smaller.
 - Otherwise compare by $C_a$ and $C_b$.
 
 
@@ -375,12 +375,6 @@ Both of these models are trained on the task of handwritten digit recognition us
 The two neural network architectures used are both feedforward neural networks, as such they can easily
 be converted into a single expression for optimization.
 
-#figure(
-  placement: top,
-  small-neural-net,
-  caption: [A multilayer perception with 1 hidden layer.],
-) <fig:nn>
-
 `fuzzy-eqsat` is implemented using the `egg` equality saturation library written in Rust. We define the following grammar
 for expressions:
 
@@ -410,6 +404,12 @@ for expressions:
     },
   ),
 )
+
+#figure(
+  placement: top,
+  small-neural-net,
+  caption: [A multilayer perception with 1 hidden layer.],
+) <fig:nn>
 
 The grammar includes standard matrix addition and multiplication,
 `diag_mul` is a special case of matrix multiplication where $e_1$ is a diagonal matrix.
@@ -784,7 +784,7 @@ as the accuracy begins to fall before reaching a 10% relative error, unlike the 
 of more than 3% when the relative error exceeds 20%.
 
 Truncated SVD is notably more impactful in this case, giving a 72.7% reduction in cost while only incurring a 0.32% accuracy loss.
-Pruning is also more effective though introduces more error, indicating that the individual parameters are more meaningful compared to the MLP.
+Pruning is also more effective but introduces more error, indicating that the individual parameters are more meaningful compared to the MLP.
 This is to be expected since LeNet-5 is a convolutional model with fewer parameters than the MLP,
 hence each neuron activation encodes more information.
 
@@ -792,7 +792,7 @@ Combining the two rewrites for LeNet-5 is noticeably less effective compared to 
 @fig:solution-plots b) shows that the Pareto fronts for truncated SVD and truncated SVD + pruning are very close together, unlike the MLP case where there
 is a sizable gap.
 
-In all cases, it is evident that going past 10% error results in diminishing returns in terms of cost reduction. This can be seen in @fig:solution-plots b),
+In all cases, it is evident that going past 10% error results in diminishing returns. This can be seen in @fig:solution-plots b),
 the Pareto front has a very steep downwards slope up to 10% error before flattening out quickly.
 The MLP does not seem to hit these diminishing returns until around 40% error.
 
@@ -825,7 +825,7 @@ It is likely that the model being optimized would have to be much larger before 
 Equality saturation has seen numerous uses in compilers and hardware synthesis.
 #cite(<juliaeqsat>) uses equality saturation to optimize Julia programs. Cranelift #cite(<cranelift>) is a compiler backend for
 Rust and WebAssembly employing acyclic e-graphs (aegraphs) for its optimization phase.
-This is weaker than regular equality saturation, which can include cycles, but reduces compilation time.
+This is less powerful than regular equality saturation, which can include cycles, but reduces compilation time.
 #cite(<coward2023automatingconstraintawaredatapathoptimization>) uses equality saturation to automatically find optimal circuit architectures
 for floating point operations.
 
@@ -845,8 +845,8 @@ model has multiple objectives.
 
 This paper presents `fuzzy-eqsat` which introduces approximate rewrite rules to equality saturation, namely
 truncated SVD and matrix pruning for linear algebra expressions. Experimental results show
-large cost reductions on basic neural networks under the cost model used, though this does not lead to actual
-runtime improvement in practice.
+large cost reductions on basic neural networks under the cost model used, though whether or not this can translate to
+runtime improvements in practice is unclear.
 
 For future work, the main improvement to be made is reformulating the cost model so that better extraction methods
 could be used instead of genetic algorithms, improving reliability and scalability. Additionally, generalizing the truncated SVD rewrite to
